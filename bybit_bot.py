@@ -269,39 +269,27 @@ def place_buy(symbol, usdt_amount, sl_price, tp_price):
         log(f"BUY  {symbol} | ${usdt_amount:.2f} USDT | "
             f"SL=${round_price(sl_price)} | TP=${round_price(tp_price)} | "
             f"ID:{order_id}", "BUY")
-        # Try to set SL/TP on exchange after fill (best-effort, non-fatal)
-        try:
-            session.set_trading_stop(
-                category   = "spot",
-                symbol     = symbol,
-                stopLoss   = str(round_price(sl_price)),
-                takeProfit = str(round_price(tp_price)),
-            )
-        except Exception:
-            pass  # software SL/TP in main loop will cover this
         return True
     except Exception as e:
         log(f"BUY FAILED {symbol}: {e}", "ERR")
         return False
 
 def update_sl_on_exchange(symbol, new_sl_price):
-    """
-    Update the stop loss on Bybit when trailing stop tightens it.
-    This keeps the trailing stop protection alive even if bot restarts.
-    """
-    try:
-        session.set_trading_stop(
-            category = "spot",
-            symbol   = symbol,
-            stopLoss = str(round_price(new_sl_price)),
-        )
-        log(f"  Trail SL updated → ${round_price(new_sl_price)}", "INFO")
-    except Exception as e:
-        log(f"  Trail SL update failed {symbol}: {e}", "WARN")
+    # set_trading_stop is futures-only; spot SL is managed in software
+    log(f"  Trail SL → ${round_price(new_sl_price)} (software)", "INFO")
+
+def round_qty(symbol, qty):
+    """Floor-round coin quantity to avoid 'insufficient balance' on sell."""
+    import math
+    price = get_price(symbol)
+    if price >= 100:   return math.floor(qty * 100) / 100   # 2 decimals
+    if price >= 1:     return math.floor(qty * 10)  / 10    # 1 decimal
+    return             float(math.floor(qty))                # integer
 
 def place_sell(symbol, coin_qty, reason="signal"):
     try:
-        qty_str = f"{coin_qty:.6f}"
+        qty_rounded = round_qty(symbol, coin_qty)
+        qty_str = str(qty_rounded)
         resp = session.place_order(
             category="spot", symbol=symbol, side="Sell",
             orderType="Market", qty=qty_str,
