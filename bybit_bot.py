@@ -304,19 +304,22 @@ def place_sell(symbol, coin_qty, reason="signal"):
 # ================================================================
 #  SIGNALS
 # ================================================================
-def buy_signal(df, trend_ok):
+def buy_signal(df, trend_ok, rsi_thresh=None, bb_thresh=None, macd_min=0.0):
     """
     Entry on 5m when ALL true:
       - 15m EMA20 > EMA50 (uptrend)
-      - Price in lower 35% of Bollinger Band (dip zone)
-      - RSI < 55 (not overbought)
-      - MACD histogram > 0 (bullish momentum active)
+      - Price in lower BB zone (bb_pct < bb_thresh)
+      - RSI < rsi_thresh (not overbought)
+      - MACD histogram > macd_min (bullish momentum)
+    Thresholds default to config values but are overridden by learned params.
     """
     last = df.iloc[-1]
+    _rsi = rsi_thresh if rsi_thresh is not None else RSI_BUY
+    _bb  = bb_thresh  if bb_thresh  is not None else BB_ENTRY
 
-    at_lower_bb  = safe_float(last["bb_pct"]) < BB_ENTRY
-    rsi_dip      = last["rsi"] < RSI_BUY
-    macd_bullish = last["macd_hist"] > 0   # histogram positive (not crossover)
+    at_lower_bb  = safe_float(last["bb_pct"]) < _bb
+    rsi_dip      = last["rsi"] < _rsi
+    macd_bullish = last["macd_hist"] > macd_min
 
     reasons = []
     if trend_ok:     reasons.append("15m-UP")
@@ -338,39 +341,76 @@ def sell_signal(df, trend_ok):
     return at_midline or rsi_high or macd_bearish or trend_broken
 
 # ================================================================
-#  LEARNING ENGINE
+#  LEARNING ENGINE  — v2  (daily compression + deep adaptation)
 # ================================================================
 class LearningEngine:
     """
-    Tracks every trade outcome and automatically adjusts entry parameters.
-    After every LEARN_EVERY trades it analyses what worked and what didn't,
-    then tightens or relaxes RSI / BB / MACD thresholds accordingly.
-    Also ranks symbols by performance and skips consistently losing ones.
+    Day-by-day learning engine.  Stores:
+      • params          – global entry thresholds (RSI, BB, MACD, trend gap)
+      • symbol_params   – per-symbol overrides tuned from that pair's history
+      • trades          – rolling window of the last MAX_RAW_TRADES (never grows)
+      • daily_summaries – one compact record per day, kept for MAX_DAILY_DAYS
+      • symbol_stats    – lifetime win/loss + consecutive-loss counter
+      • avoid_hours     – hours of day with consistently poor win rates
+
+    File size is permanently bounded:
+        50 raw trades  × ~200 bytes  =  ~10 KB
+        60 daily rows  × ~400 bytes  =  ~24 KB
+        params / stats                =  ~1  KB
+        Total maximum                ≈  ~35 KB   (forever)
+
+    What it learns:
+      1. RSI threshold  — tighten when losses happen at high RSI
+      2. BB threshold   — tighten when losses happen mid-band
+      3. MACD minimum   — raise when weak-MACD entries keep losing
+      4. Trend gap min  — raise when weak-trend entries keep losing
+      5. Per-symbol RSI/BB — each pair tuned independently
+      6. Hour avoidance — skips hours with <25% win rate over ≥3 trades
+      7. Consecutive loss cool-down — symbol paused after 3 straight losses
+      8. Cross-day pattern — tightens further after multiple bad days in a row
     """
 
     # Hard boundaries — params never go outside these
     LIMITS = {
-        "RSI_BUY":  (35,  60),
-        "BB_ENTRY": (0.20, 0.70),
-        "MACD_MIN": (0.0,  0.01),
+        "RSI_BUY":       (35,   60),
+        "BB_ENTRY":      (0.20, 0.70),
+        "MACD_MIN":      (0.0,  0.01),
+        "TREND_GAP_MIN": (0.0,  0.005),
     }
+
+    MAX_RAW_TRADES    = 50   # rolling raw-trade window
+    MAX_DAILY_DAYS    = 60   # daily summaries to keep (~2 months)
+    CONSEC_LOSS_PAUSE = 3    # pause symbol after N consecutive losses
 
     def __init__(self):
         self.params = {
-            "RSI_BUY":  RSI_BUY,
-            "BB_ENTRY": BB_ENTRY,
-            "MACD_MIN": 0.0,
+            "RSI_BUY":       RSI_BUY,
+            "BB_ENTRY":      BB_ENTRY,
+            "MACD_MIN":      0.0,
+            "TREND_GAP_MIN": 0.0,
         }
-        self.trades      = []   # full history
-        self.symbol_stats = {s: {"wins": 0, "losses": 0} for s in SYMBOLS}
+        self.trades          = []
+        self.daily_summaries = []
+        self.symbol_stats    = {s: {"wins": 0, "losses": 0, "consec_losses": 0}
+                                for s in SYMBOLS}
+        self.symbol_params   = {s: {"RSI_BUY": RSI_BUY, "BB_ENTRY": BB_ENTRY}
+                                for s in SYMBOLS}
+        self.avoid_hours     = []
+        self._current_day    = datetime.now().strftime("%Y-%m-%d")
         self._load()
 
     # ── Persistence ──────────────────────────────────────────────
     def _save(self):
+        data = {
+            "params":          self.params,
+            "trades":          self.trades[-self.MAX_RAW_TRADES:],
+            "daily_summaries": self.daily_summaries[-self.MAX_DAILY_DAYS:],
+            "symbol_stats":    self.symbol_stats,
+            "symbol_params":   self.symbol_params,
+            "avoid_hours":     self.avoid_hours,
+        }
         with open(LEARN_FILE, "w") as f:
-            json.dump({"params": self.params,
-                       "trades": self.trades[-200:],   # keep last 200
-                       "symbol_stats": self.symbol_stats}, f, indent=2)
+            json.dump(data, f, indent=2)
 
     def _load(self):
         if not os.path.exists(LEARN_FILE):
@@ -378,18 +418,82 @@ class LearningEngine:
         try:
             with open(LEARN_FILE) as f:
                 data = json.load(f)
-            self.params       = data.get("params", self.params)
-            self.trades       = data.get("trades", [])
-            self.symbol_stats = data.get("symbol_stats", self.symbol_stats)
-            log(f"LEARN  Loaded {len(self.trades)} trades | "
+            self.params          = data.get("params",          self.params)
+            self.trades          = data.get("trades",          [])
+            self.daily_summaries = data.get("daily_summaries", [])
+            self.symbol_stats    = data.get("symbol_stats",    self.symbol_stats)
+            self.symbol_params   = data.get("symbol_params",   self.symbol_params)
+            self.avoid_hours     = data.get("avoid_hours",     [])
+            # Ensure TREND_GAP_MIN exists in older files
+            self.params.setdefault("TREND_GAP_MIN", 0.0)
+            log(f"LEARN  {len(self.trades)} trades | {len(self.daily_summaries)} days | "
                 f"RSI<{self.params['RSI_BUY']}  BB<{self.params['BB_ENTRY']:.2f}  "
-                f"MACD>{self.params['MACD_MIN']:.4f}", "WARN")
+                f"MACD>{self.params['MACD_MIN']:.4f}  "
+                f"TrendGap>{self.params['TREND_GAP_MIN']:.4f}", "WARN")
+            if self.avoid_hours:
+                log(f"LEARN  Avoiding hours: {self.avoid_hours}", "WARN")
         except Exception as e:
             log(f"LEARN  Could not load: {e}", "WARN")
+
+    # ── Day rollover ──────────────────────────────────────────────
+    def _check_day_rollover(self):
+        today = datetime.now().strftime("%Y-%m-%d")
+        if today != self._current_day:
+            self._compress_day(self._current_day)
+            self._current_day = today
+
+    def _compress_day(self, date_str):
+        """Distil all raw trades for date_str into one compact daily summary."""
+        day_trades = [t for t in self.trades if t["time"].startswith(date_str)]
+        if not day_trades:
+            return
+
+        wins   = [t for t in day_trades if t["win"]]
+        losses = [t for t in day_trades if not t["win"]]
+
+        def avg(seq, key):
+            return round(sum(t[key] for t in seq) / len(seq), 4) if seq else None
+
+        summary = {
+            "date":         date_str,
+            "trades":       len(day_trades),
+            "wins":         len(wins),
+            "losses":       len(losses),
+            "win_rate":     round(len(wins) / len(day_trades), 3),
+            "avg_pnl_pct":  avg(day_trades, "pnl_pct"),
+            "sl_rate":      round(
+                sum(1 for t in day_trades if t["exit_reason"] == "stop_loss")
+                / len(day_trades), 3),
+            "params_eod":   dict(self.params),
+            "win_avg_rsi":  avg(wins,   "entry_rsi"),
+            "loss_avg_rsi": avg(losses, "entry_rsi"),
+            "win_avg_bb":   avg(wins,   "entry_bb"),
+            "loss_avg_bb":  avg(losses, "entry_bb"),
+            "win_avg_macd": avg(wins,   "entry_macd"),
+            "loss_avg_macd":avg(losses, "entry_macd"),
+            "by_symbol": {
+                sym: {
+                    "trades": len(st := [t for t in day_trades if t["symbol"] == sym]),
+                    "wins":   sum(1 for t in st if t["win"]),
+                    "avg_pnl": avg(st, "pnl_pct"),
+                }
+                for sym in {t["symbol"] for t in day_trades}
+            },
+        }
+        # Replace existing summary for this date (idempotent)
+        self.daily_summaries = [s for s in self.daily_summaries
+                                 if s["date"] != date_str]
+        self.daily_summaries.append(summary)
+        self.daily_summaries = self.daily_summaries[-self.MAX_DAILY_DAYS:]
+        log(f"LEARN  Day {date_str} compressed → "
+            f"{len(day_trades)} trades | WR={summary['win_rate']:.0%} | "
+            f"SL={summary['sl_rate']:.0%}", "WARN")
 
     # ── Record a completed trade ──────────────────────────────────
     def record(self, symbol, entry_rsi, entry_bb, entry_macd,
                entry_trend_gap, exit_reason, pnl_pct):
+        self._check_day_rollover()
+
         win = pnl_pct > 0
         self.trades.append({
             "time":            datetime.now().isoformat(),
@@ -401,11 +505,21 @@ class LearningEngine:
             "exit_reason":     exit_reason,
             "pnl_pct":         round(pnl_pct, 4),
             "win":             win,
+            "hour":            datetime.now().hour,
         })
-        # Symbol stats
-        if symbol in self.symbol_stats:
-            if win: self.symbol_stats[symbol]["wins"]   += 1
-            else:   self.symbol_stats[symbol]["losses"] += 1
+
+        # Update symbol stats + consecutive loss counter
+        ss = self.symbol_stats.setdefault(
+            symbol, {"wins": 0, "losses": 0, "consec_losses": 0})
+        if win:
+            ss["wins"]          += 1
+            ss["consec_losses"]  = 0
+        else:
+            ss["losses"]        += 1
+            ss["consec_losses"]  = ss.get("consec_losses", 0) + 1
+
+        # Hard cap on raw trades — file never grows beyond MAX_RAW_TRADES
+        self.trades = self.trades[-self.MAX_RAW_TRADES:]
 
         self._save()
 
@@ -414,7 +528,7 @@ class LearningEngine:
 
     # ── Core adaptation logic ─────────────────────────────────────
     def _adapt(self):
-        recent = self.trades[-30:]   # analyse last 30 trades
+        recent = self.trades          # already capped at MAX_RAW_TRADES
         if len(recent) < LEARN_EVERY:
             return
 
@@ -423,84 +537,197 @@ class LearningEngine:
         wr     = len(wins) / len(recent)
         changes = []
 
-        # ── RSI adaptation ───────────────────────────────
-        if losses:
+        # ── 1. RSI threshold ──────────────────────────────────────
+        if wins and losses:
             avg_loss_rsi = sum(t["entry_rsi"] for t in losses) / len(losses)
-            avg_win_rsi  = sum(t["entry_rsi"] for t in wins)   / len(wins) if wins else 50
+            avg_win_rsi  = sum(t["entry_rsi"] for t in wins)   / len(wins)
             if avg_loss_rsi > avg_win_rsi + 3:
-                # losses tend to happen at higher RSI — tighten
                 new = self._clamp("RSI_BUY", self.params["RSI_BUY"] - 2)
                 if new != self.params["RSI_BUY"]:
-                    changes.append(f"RSI {self.params['RSI_BUY']}→{new} (loss avg RSI={avg_loss_rsi:.1f})")
+                    changes.append(
+                        f"RSI {self.params['RSI_BUY']}→{new} "
+                        f"(losses@{avg_loss_rsi:.1f} vs wins@{avg_win_rsi:.1f})")
                     self.params["RSI_BUY"] = new
 
         if wr > 0.65 and len(recent) >= 10:
-            # doing well — relax RSI slightly to catch more trades
             new = self._clamp("RSI_BUY", self.params["RSI_BUY"] + 1)
             if new != self.params["RSI_BUY"]:
-                changes.append(f"RSI {self.params['RSI_BUY']}→{new} (WR={wr:.0%} good)")
+                changes.append(f"RSI {self.params['RSI_BUY']}→{new} (WR={wr:.0%} strong)")
                 self.params["RSI_BUY"] = new
 
-        # ── BB adaptation ─────────────────────────────────
-        if losses:
+        # ── 2. BB threshold ───────────────────────────────────────
+        if wins and losses:
             avg_loss_bb = sum(t["entry_bb"] for t in losses) / len(losses)
-            avg_win_bb  = sum(t["entry_bb"] for t in wins)   / len(wins) if wins else 0.3
+            avg_win_bb  = sum(t["entry_bb"] for t in wins)   / len(wins)
             if avg_loss_bb > avg_win_bb + 0.07:
                 new = self._clamp("BB_ENTRY", round(self.params["BB_ENTRY"] - 0.05, 2))
                 if new != self.params["BB_ENTRY"]:
-                    changes.append(f"BB {self.params['BB_ENTRY']:.2f}→{new:.2f} (losses at higher BB)")
+                    changes.append(
+                        f"BB {self.params['BB_ENTRY']:.2f}→{new:.2f} "
+                        f"(losses@BB={avg_loss_bb:.2f} vs wins@{avg_win_bb:.2f})")
                     self.params["BB_ENTRY"] = new
 
+        # ── 3. Stop-loss rate — tighten both BB and RSI ───────────
         sl_rate = sum(1 for t in recent if t["exit_reason"] == "stop_loss") / len(recent)
         if sl_rate > 0.40:
-            # too many stop losses — tighten both BB and RSI
             new_bb  = self._clamp("BB_ENTRY", round(self.params["BB_ENTRY"] - 0.05, 2))
             new_rsi = self._clamp("RSI_BUY",  self.params["RSI_BUY"] - 2)
-            changes.append(f"SL rate {sl_rate:.0%} too high — BB→{new_bb:.2f} RSI→{new_rsi}")
+            changes.append(f"SL rate {sl_rate:.0%} → BB→{new_bb:.2f} RSI→{new_rsi}")
             self.params["BB_ENTRY"] = new_bb
             self.params["RSI_BUY"]  = new_rsi
 
-        # ── MACD minimum strength ─────────────────────────
+        # ── 4. MACD minimum strength ──────────────────────────────
         if losses:
             avg_loss_macd = sum(t["entry_macd"] for t in losses) / len(losses)
             if avg_loss_macd < 0.001:
-                new = self._clamp("MACD_MIN", round(self.params["MACD_MIN"] + 0.0002, 4))
+                new = self._clamp("MACD_MIN",
+                                  round(self.params["MACD_MIN"] + 0.0002, 4))
                 if new != self.params["MACD_MIN"]:
-                    changes.append(f"MACD_MIN →{new:.4f} (weak MACD entries losing)")
+                    changes.append(f"MACD_MIN →{new:.4f} (weak-MACD entries losing)")
                     self.params["MACD_MIN"] = new
+
+        # ── 5. Trend gap filter ───────────────────────────────────
+        if wins and losses:
+            avg_loss_gap = sum(t["entry_trend_gap"] for t in losses) / len(losses)
+            avg_win_gap  = sum(t["entry_trend_gap"] for t in wins)   / len(wins)
+            if avg_win_gap > avg_loss_gap * 1.5 and avg_win_gap > 0:
+                new = self._clamp("TREND_GAP_MIN",
+                                  round(avg_loss_gap * 0.5, 4))
+                if new != self.params["TREND_GAP_MIN"]:
+                    changes.append(
+                        f"TREND_GAP_MIN →{new:.4f} "
+                        f"(wins gap={avg_win_gap:.4f} vs losses={avg_loss_gap:.4f})")
+                    self.params["TREND_GAP_MIN"] = new
+
+        # ── 6. Hour-of-day avoidance ──────────────────────────────
+        if len(recent) >= 20:
+            hour_stats = {}
+            for t in recent:
+                h = t.get("hour", -1)
+                if h < 0:
+                    continue
+                hs = hour_stats.setdefault(h, {"wins": 0, "total": 0})
+                hs["total"] += 1
+                if t["win"]:
+                    hs["wins"] += 1
+
+            bad_hours = [h for h, s in hour_stats.items()
+                         if s["total"] >= 3 and s["wins"] / s["total"] < 0.25]
+            if bad_hours:
+                new_avoid = sorted(set(self.avoid_hours + bad_hours))
+                if new_avoid != self.avoid_hours:
+                    changes.append(f"Avoid hours {bad_hours} added (WR<25%)")
+                    self.avoid_hours = new_avoid
+
+            # Un-avoid hours whose win rate has recovered
+            recovered = [h for h in self.avoid_hours
+                         if (s := hour_stats.get(h)) and
+                            s["total"] >= 3 and s["wins"] / s["total"] >= 0.50]
+            if recovered:
+                self.avoid_hours = [h for h in self.avoid_hours
+                                    if h not in recovered]
+                changes.append(f"Restored hours {recovered} (WR≥50%)")
+
+        # ── 7. Per-symbol parameter tuning ───────────────────────
+        for sym in SYMBOLS:
+            sym_trades = [t for t in recent if t["symbol"] == sym]
+            if len(sym_trades) < 5:
+                continue
+            sym_wins   = [t for t in sym_trades if t["win"]]
+            sym_losses = [t for t in sym_trades if not t["win"]]
+            sym_wr     = len(sym_wins) / len(sym_trades)
+            sp = self.symbol_params.setdefault(
+                sym, {"RSI_BUY": RSI_BUY, "BB_ENTRY": BB_ENTRY})
+
+            # Tighten RSI for symbols where losses happen at higher RSI
+            if sym_wins and sym_losses:
+                sl_rsi = sum(t["entry_rsi"] for t in sym_losses) / len(sym_losses)
+                wn_rsi = sum(t["entry_rsi"] for t in sym_wins)   / len(sym_wins)
+                if sl_rsi > wn_rsi + 4:
+                    new_rsi = max(35, sp["RSI_BUY"] - 2)
+                    if new_rsi != sp["RSI_BUY"]:
+                        changes.append(f"{sym} RSI→{new_rsi} (per-symbol losses@{sl_rsi:.1f})")
+                        sp["RSI_BUY"] = new_rsi
+
+            # Relax BB slightly if symbol is doing well; tighten if poor
+            if sym_wr > 0.70 and len(sym_trades) >= 5:
+                new_bb = min(0.65, round(sp["BB_ENTRY"] + 0.03, 2))
+                if new_bb != sp["BB_ENTRY"]:
+                    changes.append(f"{sym} BB→{new_bb:.2f} (WR={sym_wr:.0%} strong)")
+                    sp["BB_ENTRY"] = new_bb
+            elif sym_wr < 0.35 and len(sym_trades) >= 5:
+                new_bb = max(0.20, round(sp["BB_ENTRY"] - 0.05, 2))
+                if new_bb != sp["BB_ENTRY"]:
+                    changes.append(f"{sym} BB→{new_bb:.2f} (WR={sym_wr:.0%} weak)")
+                    sp["BB_ENTRY"] = new_bb
+
+        # ── 8. Cross-day learning ─────────────────────────────────
+        if len(self.daily_summaries) >= 3:
+            recent_days  = self.daily_summaries[-7:]
+            avg_daily_wr = sum(d["win_rate"] for d in recent_days) / len(recent_days)
+            avg_daily_sl = sum(d["sl_rate"]  for d in recent_days) / len(recent_days)
+            if avg_daily_wr < 0.45 and avg_daily_sl > 0.35:
+                new_bb = self._clamp("BB_ENTRY",
+                                     round(self.params["BB_ENTRY"] - 0.03, 2))
+                if new_bb != self.params["BB_ENTRY"]:
+                    changes.append(
+                        f"Multi-day tighten: BB→{new_bb:.2f} "
+                        f"(7d WR={avg_daily_wr:.0%} SL={avg_daily_sl:.0%})")
+                    self.params["BB_ENTRY"] = new_bb
 
         self._save()
 
         if changes:
             log("─" * 70)
-            log(f"LEARN  Analysed {len(recent)} trades | WR={wr:.0%} | Adjustments:", "WARN")
+            log(f"LEARN  {len(recent)} trades | WR={wr:.0%} | {len(changes)} adjustments:", "WARN")
             for c in changes:
                 log(f"LEARN    • {c}", "WARN")
             log("─" * 70)
         else:
-            log(f"LEARN  WR={wr:.0%} over {len(recent)} trades — parameters stable", "WARN")
+            log(f"LEARN  WR={wr:.0%} over {len(recent)} trades — params stable", "WARN")
 
     # ── Helpers ───────────────────────────────────────────────────
     def _clamp(self, key, value):
         lo, hi = self.LIMITS[key]
         return max(lo, min(hi, value))
 
+    def get_symbol_params(self, symbol):
+        """Return per-symbol learned thresholds (falls back to global params)."""
+        sp = self.symbol_params.get(symbol, {})
+        return {
+            "RSI_BUY":  sp.get("RSI_BUY",  self.params["RSI_BUY"]),
+            "BB_ENTRY": sp.get("BB_ENTRY", self.params["BB_ENTRY"]),
+        }
+
+    def should_skip_hour(self):
+        """Return True if the current hour has been flagged as consistently bad."""
+        return datetime.now().hour in self.avoid_hours
+
     def is_symbol_banned(self, symbol):
-        """Skip a symbol if it has lost 5+ more times than it has won recently."""
-        s = self.symbol_stats.get(symbol, {})
-        w, l = s.get("wins", 0), s.get("losses", 0)
-        return l - w >= 5
+        """Ban symbol if net losses ≥5 overall OR 3+ consecutive losses."""
+        s   = self.symbol_stats.get(symbol, {})
+        net = s.get("losses", 0) - s.get("wins", 0)
+        cl  = s.get("consec_losses", 0)
+        return net >= 5 or cl >= self.CONSEC_LOSS_PAUSE
 
     def summary(self):
-        if not self.trades:
-            return "No trades learned yet"
-        recent = self.trades[-20:]
-        wr  = sum(1 for t in recent if t["win"]) / len(recent)
-        avg = sum(t["pnl_pct"] for t in recent) / len(recent)
-        return (f"Last {len(recent)} trades: WR={wr:.0%}  AvgPnL={avg:+.2f}%  "
-                f"| Learned: RSI<{self.params['RSI_BUY']}  "
-                f"BB<{self.params['BB_ENTRY']:.2f}  "
-                f"MACD>{self.params['MACD_MIN']:.4f}")
+        parts = []
+        if self.trades:
+            recent = self.trades[-20:]
+            wr  = sum(1 for t in recent if t["win"]) / len(recent)
+            avg = sum(t["pnl_pct"] for t in recent) / len(recent)
+            parts.append(f"Recent {len(recent)}: WR={wr:.0%} AvgPnL={avg:+.2f}%")
+        parts.append(
+            f"RSI<{self.params['RSI_BUY']} BB<{self.params['BB_ENTRY']:.2f} "
+            f"MACD>{self.params['MACD_MIN']:.4f} "
+            f"TrendGap>{self.params['TREND_GAP_MIN']:.4f}")
+        if self.daily_summaries:
+            d = self.daily_summaries[-1]
+            parts.append(
+                f"Last day {d['date']}: {d['trades']} trades WR={d['win_rate']:.0%}")
+        if self.avoid_hours:
+            parts.append(f"Avoid hrs:{self.avoid_hours}")
+        return " | ".join(parts)
 
 
 # ================================================================
@@ -642,25 +869,30 @@ def run_bot():
                     bb_pct_val  = safe_float(last["bb_pct"])
 
                     # ── Compact status (2 lines per pair) ─────────
-                    # Use learned params (override config defaults)
-                    L_RSI  = learner.params["RSI_BUY"]
-                    L_BB   = learner.params["BB_ENTRY"]
+                    # Use per-symbol learned params (fallback to global)
+                    sp     = learner.get_symbol_params(symbol)
+                    L_RSI  = sp["RSI_BUY"]
+                    L_BB   = sp["BB_ENTRY"]
                     L_MACD = learner.params["MACD_MIN"]
+                    L_GAP  = learner.params["TREND_GAP_MIN"]
+                    trend_gap = ema_f - ema_s
 
                     c1_ok = trend_ok
                     c2_ok = bb_pct_val < L_BB
                     c3_ok = last['rsi'] < L_RSI
                     c4_ok = macd_hist > L_MACD
-                    all_ok = c1_ok and c2_ok and c3_ok and c4_ok
+                    c5_ok = trend_gap >= L_GAP
+                    all_ok = c1_ok and c2_ok and c3_ok and c4_ok and c5_ok
 
                     t = "✓ Trend"  if c1_ok else f"✗ Trend(EMA20={ema_f:.2f} < EMA50={ema_s:.2f})"
                     b = "✓ BB"    if c2_ok else f"✗ BB({bb_pct_val:.2f} need <{L_BB})"
                     r = "✓ RSI"   if c3_ok else f"✗ RSI({last['rsi']:.1f} need <{L_RSI})"
                     m = "✓ MACD"  if c4_ok else f"✗ MACD({macd_sign}{macd_hist:.4f} need >{L_MACD:.4f})"
+                    g = "✓ Gap"   if c5_ok else f"✗ Gap({trend_gap:.4f} need ≥{L_GAP:.4f})"
 
                     state = "IN TRADE" if in_pos else ("** BUY **" if all_ok else "waiting")
                     log(f"  {symbol:<10} ${price:>12,.4f}  RSI={last['rsi']:4.1f}  BB={bb_pct_val:.2f}  MACD={macd_sign}{macd_hist:.4f}  [{state}]")
-                    log(f"           {t}   {b}   {r}   {m}   {'→ OPENING TRADE' if all_ok else ''}")
+                    log(f"           {t}   {b}   {r}   {m}   {g}   {'→ OPENING TRADE' if all_ok else ''}")
 
                     # ── MANAGE OPEN POSITION ──────────────────────
                     if in_pos:
@@ -751,35 +983,50 @@ def run_bot():
 
                     # ── LOOK FOR ENTRY ────────────────────────────
                     elif open_positions < MAX_POSITIONS:
-                        signal_ok, reasons = buy_signal(df, trend_ok)
-                        if signal_ok:
-                            size = calc_position_size(usdt_bal)
-                            if size < MIN_TRADE_USDT:
-                                log(f"    Skipping: size ${size:.2f} below minimum", "WARN")
-                            else:
-                                sl = price * (1 - STOP_LOSS_PCT)
-                                tp = max(safe_float(last["bb_mid"]), price * (1 + TAKE_PROFIT_PCT * 0.5))
-                                log(f"    BUY SIGNAL [{' | '.join(reasons)}] | "
-                                    f"Size=${size:.2f} | SL=${sl:.4f} | TP=${tp:.4f}", "BUY")
-                                if place_buy(symbol, size, sl, tp):
-                                    entry_prices[symbol]    = price
-                                    highest_price[symbol]   = price
-                                    entry_usdt[symbol]      = size
-                                    bb_mid_at_entry[symbol] = safe_float(last["bb_mid"])
-                                    sl_prices[symbol]       = sl
-                                    tp_prices[symbol]       = tp
-                                    # Record entry conditions for learning
-                                    entry_rsi[symbol]       = last["rsi"]
-                                    entry_bb[symbol]        = bb_pct_val
-                                    entry_macd[symbol]      = macd_hist
-                                    entry_trend_gap[symbol] = ema_f - ema_s
-                                    open_positions         += 1
-                                    usdt_bal               -= size
-                                    log_trade(symbol, "BUY", price, size, price, 0, "signal")
-                                    # Save state immediately after every buy
-                                    save_state(entry_prices, highest_price, entry_usdt,
-                                               bb_mid_at_entry, sl_prices, tp_prices,
-                                               trade_count, win_count, total_pnl)
+                        # Hour filter — skip entry if this hour has a poor track record
+                        if learner.should_skip_hour():
+                            log(f"  {symbol}: skip — hour {datetime.now().hour:02d}:xx avoided by learner", "WARN")
+                        else:
+                            # Use the SAME learned params for actual entry decision
+                            # (fixes the bug where buy_signal used hardcoded constants)
+                            signal_ok, reasons = buy_signal(
+                                df, trend_ok,
+                                rsi_thresh=L_RSI,
+                                bb_thresh=L_BB,
+                                macd_min=L_MACD,
+                            )
+                            # Also apply trend gap filter
+                            if signal_ok and trend_gap < L_GAP:
+                                log(f"    Skip: trend gap {trend_gap:.4f} < min {L_GAP:.4f}", "WARN")
+                                signal_ok = False
+                            if signal_ok:
+                                size = calc_position_size(usdt_bal)
+                                if size < MIN_TRADE_USDT:
+                                    log(f"    Skipping: size ${size:.2f} below minimum", "WARN")
+                                else:
+                                    sl = price * (1 - STOP_LOSS_PCT)
+                                    tp = max(safe_float(last["bb_mid"]), price * (1 + TAKE_PROFIT_PCT * 0.5))
+                                    log(f"    BUY SIGNAL [{' | '.join(reasons)}] | "
+                                        f"Size=${size:.2f} | SL=${sl:.4f} | TP=${tp:.4f}", "BUY")
+                                    if place_buy(symbol, size, sl, tp):
+                                        entry_prices[symbol]    = price
+                                        highest_price[symbol]   = price
+                                        entry_usdt[symbol]      = size
+                                        bb_mid_at_entry[symbol] = safe_float(last["bb_mid"])
+                                        sl_prices[symbol]       = sl
+                                        tp_prices[symbol]       = tp
+                                        # Record entry conditions for learning
+                                        entry_rsi[symbol]       = last["rsi"]
+                                        entry_bb[symbol]        = bb_pct_val
+                                        entry_macd[symbol]      = macd_hist
+                                        entry_trend_gap[symbol] = trend_gap
+                                        open_positions         += 1
+                                        usdt_bal               -= size
+                                        log_trade(symbol, "BUY", price, size, price, 0, "signal")
+                                        # Save state immediately after every buy
+                                        save_state(entry_prices, highest_price, entry_usdt,
+                                                   bb_mid_at_entry, sl_prices, tp_prices,
+                                                   trade_count, win_count, total_pnl)
 
                 except Exception as e:
                     log(f"  {symbol}: {e}", "ERR")

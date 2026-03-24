@@ -147,12 +147,78 @@
       "exit_reason": "stop_loss",
       "pnl_pct": -3.516,
       "win": false
+    },
+    {
+      "time": "2026-03-24T18:10:35.324105",
+      "symbol": "ETHUSDT",
+      "entry_rsi": 50.0,
+      "entry_bb": 0.453,
+      "entry_macd": 0.34275,
+      "entry_trend_gap": 6.0277,
+      "exit_reason": "bb_midline",
+      "pnl_pct": 0.5339,
+      "win": true
+    },
+    {
+      "time": "2026-03-24T18:11:42.545111",
+      "symbol": "ADAUSDT",
+      "entry_rsi": 50.0,
+      "entry_bb": 0.466,
+      "entry_macd": 8e-05,
+      "entry_trend_gap": 0.0013,
+      "exit_reason": "bb_midline",
+      "pnl_pct": 0.3802,
+      "win": true
+    },
+    {
+      "time": "2026-03-24T18:14:56.388928",
+      "symbol": "ADAUSDT",
+      "entry_rsi": 50.0,
+      "entry_bb": 0.466,
+      "entry_macd": 8e-05,
+      "entry_trend_gap": 0.0008,
+      "exit_reason": "take_profit",
+      "pnl_pct": 3.9063,
+      "win": true
+    },
+    {
+      "time": "2026-03-24T18:20:17.234542",
+      "symbol": "ETHUSDT",
+      "entry_rsi": 47.62,
+      "entry_bb": 0.437,
+      "entry_macd": 0.20578,
+      "entry_trend_gap": 6.1378,
+      "exit_reason": "signal",
+      "pnl_pct": 0.0,
+      "win": false
+    },
+    {
+      "time": "2026-03-24T18:24:37.967229",
+      "symbol": "ADAUSDT",
+      "entry_rsi": 48.39,
+      "entry_bb": 0.311,
+      "entry_macd": 0.0,
+      "entry_trend_gap": 0.0015,
+      "exit_reason": "stop_loss",
+      "pnl_pct": -1.8868,
+      "win": false
+    },
+    {
+      "time": "2026-03-24T18:25:44.020973",
+      "symbol": "TRXUSDT",
+      "entry_rsi": 51.75,
+      "entry_bb": 0.442,
+      "entry_macd": 4e-05,
+      "entry_trend_gap": 0.0019,
+      "exit_reason": "take_profit",
+      "pnl_pct": 3.0829,
+      "win": true
     }
   ],
   "symbol_stats": {
     "ETHUSDT": {
-      "wins": 0,
-      "losses": 1
+      "wins": 1,
+      "losses": 2
     },
     "SOLUSDT": {
       "wins": 0,
@@ -163,11 +229,11 @@
       "losses": 0
     },
     "ADAUSDT": {
-      "wins": 2,
-      "losses": 1
+      "wins": 4,
+      "losses": 2
     },
     "TRXUSDT": {
-      "wins": 5,
+      "wins": 6,
       "losses": 3
     }
   }
