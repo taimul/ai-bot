@@ -489,6 +489,7 @@ class LearningEngine:
     MAX_RAW_TRADES    = 50   # rolling raw-trade window
     MAX_DAILY_DAYS    = 60   # daily summaries to keep (~2 months)
     CONSEC_LOSS_PAUSE = 3    # pause symbol after N consecutive losses
+    COOLDOWN_MINUTES  = 60   # how long the cooldown lasts before retrying
 
     def __init__(self):
         self.params = {
@@ -499,6 +500,7 @@ class LearningEngine:
         }
         self.trades          = []
         self.daily_summaries = []
+        self.cooldowns       = {}  # symbol -> datetime when cooldown expires
         self.symbol_stats    = {s: {"wins": 0, "losses": 0, "consec_losses": 0}
                                 for s in SYMBOLS}
         self.symbol_params   = {s: {"RSI_BUY": RSI_BUY, "BB_ENTRY": BB_ENTRY}
@@ -812,11 +814,38 @@ class LearningEngine:
         return datetime.now().hour in self.avoid_hours
 
     def is_symbol_banned(self, symbol):
-        """Ban symbol if net losses ≥5 overall OR 3+ consecutive losses."""
+        """
+        Pause symbol for COOLDOWN_MINUTES after 3 consecutive losses
+        or 5+ net losses. Automatically retries after the cooldown expires.
+        """
         s   = self.symbol_stats.get(symbol, {})
         net = s.get("losses", 0) - s.get("wins", 0)
         cl  = s.get("consec_losses", 0)
-        return net >= 5 or cl >= self.CONSEC_LOSS_PAUSE
+
+        needs_cooldown = net >= 5 or cl >= self.CONSEC_LOSS_PAUSE
+        if not needs_cooldown:
+            self.cooldowns.pop(symbol, None)   # clear any expired cooldown
+            return False
+
+        now    = datetime.now()
+        expiry = self.cooldowns.get(symbol)
+        if expiry is None:
+            # First time hitting the threshold — start the cooldown clock
+            self.cooldowns[symbol] = now + __import__("datetime").timedelta(
+                minutes=self.COOLDOWN_MINUTES)
+            log(f"  {symbol}: cooldown started — pausing {self.COOLDOWN_MINUTES}min", "WARN")
+            return True
+
+        if now >= expiry:
+            # Cooldown expired — reset consecutive counter and retry
+            log(f"  {symbol}: cooldown over — resetting and retrying", "WARN")
+            s["consec_losses"] = 0
+            self.cooldowns.pop(symbol, None)
+            return False
+
+        mins_left = int((expiry - now).total_seconds() / 60)
+        log(f"  {symbol:<10} COOLDOWN {mins_left}min left", "WARN")
+        return True
 
     def summary(self):
         parts = []
