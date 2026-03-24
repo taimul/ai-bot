@@ -921,9 +921,22 @@ def run_bot():
 
                         def close_trade(reason):
                             nonlocal trade_count, win_count, total_pnl, daily_pnl
-                            # Use entry-based coin qty, not wallet balance
-                            # (wallet may have dust from previous failed sells)
-                            sell_qty = entry_usdt[symbol] / ep if ep > 0 else qty
+                            # Fetch actual coin balance fresh — entry-based math
+                            # is always slightly high because Bybit deducts fees
+                            # from the coins received on buy, leaving a little
+                            # less than entry_usdt/ep in the wallet.
+                            actual_bal = get_position_qty(symbol)
+                            sell_qty   = round_qty(symbol, actual_bal)
+                            if sell_qty <= 0:
+                                log(f"    {reason.upper()} | wallet has only dust "
+                                    f"({actual_bal:.6f}) — clearing state", "WARN")
+                                entry_prices[symbol] = highest_price[symbol] = entry_usdt[symbol] = 0.0
+                                bb_mid_at_entry[symbol] = sl_prices[symbol] = tp_prices[symbol] = 0.0
+                                entry_rsi[symbol] = entry_bb[symbol] = entry_macd[symbol] = entry_trend_gap[symbol] = 0.0
+                                save_state(entry_prices, highest_price, entry_usdt,
+                                           bb_mid_at_entry, sl_prices, tp_prices,
+                                           trade_count, win_count, total_pnl)
+                                return
                             if place_sell(symbol, sell_qty, reason=reason):
                                 pnl     = (price - ep) * sell_qty
                                 pnl_pct_val = (price - ep) / ep if ep > 0 else 0

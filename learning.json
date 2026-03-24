@@ -226,6 +226,18 @@
       "pnl_pct": 8.4894,
       "win": true,
       "hour": 18
+    },
+    {
+      "time": "2026-03-24T18:39:42.390302",
+      "symbol": "TRXUSDT",
+      "entry_rsi": 0.0,
+      "entry_bb": 0.0,
+      "entry_macd": 0.0,
+      "entry_trend_gap": 0.0,
+      "exit_reason": "stop_loss",
+      "pnl_pct": -3.1126,
+      "win": false,
+      "hour": 18
     }
   ],
   "daily_summaries": [],
@@ -248,8 +260,8 @@
     },
     "TRXUSDT": {
       "wins": 7,
-      "losses": 3,
-      "consec_losses": 0
+      "losses": 4,
+      "consec_losses": 1
     }
   },
   "symbol_params": {
