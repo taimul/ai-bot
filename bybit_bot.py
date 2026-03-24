@@ -35,6 +35,7 @@ from pybit.unified_trading import HTTP
 API_KEY    = "YndDHQr6Mpx2i3fElS"
 API_SECRET = "oGjioa9ZVih7rw1b4dBVMJJ2UkGQZ4LrF5cR"
 
+
 # Confirmed active pairs on Bybit Testnet (verified with real candle data)
 # MAINNET: expand this list freely — all major pairs work on mainnet
 SYMBOLS = [
@@ -89,6 +90,7 @@ session = HTTP(testnet=True, api_key=API_KEY, api_secret=API_SECRET)
 def log(msg, level="INFO"):
     icons = {"INFO": "   ", "BUY": ">>", "SELL": "<<", "WARN": "!!", "ERR": "XX"}
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {icons.get(level,'  ')} {msg}")
+
 
 def init_trade_log():
     if not os.path.exists(TRADE_LOG):
@@ -563,7 +565,7 @@ def run_bot():
     while True:
         try:
             usdt_bal       = get_balance()
-            open_positions = sum(1 for s in SYMBOLS if get_position_qty(s) > 0.0001)
+            open_positions = sum(1 for s in SYMBOLS if entry_prices[s] > 0)
 
             # ── Circuit Breaker ───────────────────────────────────
             if daily_pnl <= -daily_limit:
@@ -605,7 +607,9 @@ def run_bot():
 
                     price = get_price(symbol)
                     qty   = get_position_qty(symbol)
-                    in_pos = qty > 0.0001
+                    # in_pos requires bot to have opened the trade AND coin value >= $5
+                    # This prevents wallet dust from repeated failed sells showing as IN TRADE
+                    in_pos = entry_prices[symbol] > 0 and (qty * price) >= MIN_TRADE_USDT
 
                     # If position closed by exchange SL/TP while bot was offline,
                     # clean up our local state
@@ -676,16 +680,20 @@ def run_bot():
                                        trade_count, win_count, total_pnl)
                             continue
 
+                        trade_qty = entry_usdt[symbol] / ep if ep > 0 else qty
                         pnl_pct = (price - ep) / ep if ep > 0 else 0
-                        pnl_usd  = (price - ep) * qty
+                        pnl_usd  = (price - ep) * trade_qty
                         pnl_sign = "+" if pnl_usd >= 0 else ""
                         pnl_icon = "▲" if pnl_usd >= 0 else "▼"
                         log(f"  {'':10}  Entry=${ep:.4f}  SL=${sl_prices[symbol]:.4f}  TP=${tp_prices[symbol]:.4f}  P&L={pnl_sign}${abs(pnl_usd):.2f} ({pnl_pct*100:+.2f}%) {pnl_icon}")
 
                         def close_trade(reason):
                             nonlocal trade_count, win_count, total_pnl, daily_pnl
-                            if place_sell(symbol, qty, reason=reason):
-                                pnl     = (price - ep) * qty
+                            # Use entry-based coin qty, not wallet balance
+                            # (wallet may have dust from previous failed sells)
+                            sell_qty = entry_usdt[symbol] / ep if ep > 0 else qty
+                            if place_sell(symbol, sell_qty, reason=reason):
+                                pnl     = (price - ep) * sell_qty
                                 pnl_pct_val = (price - ep) / ep if ep > 0 else 0
                                 total_pnl += pnl
                                 daily_pnl += pnl
