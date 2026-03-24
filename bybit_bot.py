@@ -167,8 +167,12 @@ def get_candles(symbol, interval, limit=120):
     return df
 
 def get_15m_trend(symbol):
-    """Trend check on 15m: EMA20 > EMA50 = uptrend. Returns None on insufficient data."""
-    df = get_candles(symbol, INTERVAL_15M, limit=60)
+    """
+    Trend check on 15m: EMA20 > EMA50 = uptrend.
+    Fetches 150 candles so EMA50 is fully warmed up (needs 50 to converge).
+    Returns (trend_ok, ema_fast, ema_slow) or (None, 0, 0) if insufficient data.
+    """
+    df = get_candles(symbol, INTERVAL_15M, limit=150)
     if len(df) < EMA_15M_SLOW + 5:
         return None, 0.0, 0.0
     df["ema_fast"] = df["close"].ewm(span=EMA_15M_FAST, adjust=False).mean()
@@ -409,13 +413,6 @@ def run_bot():
 
             for symbol in SYMBOLS:
                 try:
-                    trend_ok, _, _ = get_15m_trend(symbol)
-
-                    # Skip if 15m trend has no data
-                    if trend_ok is None:
-                        log(f"  {symbol:<12} skipping — not enough 15m candles on testnet", "WARN")
-                        continue
-
                     df = add_15m_indicators(get_candles(symbol, INTERVAL_5M))
 
                     # Need at least 2 rows for prev/last comparisons + enough for indicators
@@ -457,6 +454,11 @@ def run_bot():
                     if in_pos and price > highest_price[symbol]:
                         highest_price[symbol] = price
 
+                    trend_ok, ema_f, ema_s = get_15m_trend(symbol)
+                    if trend_ok is None:
+                        log(f"  {symbol:<10} skipping — not enough 15m candles", "WARN")
+                        continue
+
                     trend_icon  = "▲" if trend_ok else "▼"
                     macd_hist   = safe_float(last["macd_hist"])
                     macd_sign   = "+" if macd_hist > 0 else ""
@@ -469,14 +471,14 @@ def run_bot():
                     c4_ok = macd_hist > 0
                     all_ok = c1_ok and c2_ok and c3_ok and c4_ok
 
-                    t = "✓" if c1_ok else f"✗(need uptrend)"
-                    b = "✓" if c2_ok else f"✗(need <{BB_ENTRY}, got {bb_pct_val:.2f})"
-                    r = "✓" if c3_ok else f"✗(need <{RSI_BUY}, got {last['rsi']:.1f})"
-                    m = "✓" if c4_ok else f"✗(need >0, got {macd_sign}{macd_hist:.4f})"
+                    t = "✓ Trend"  if c1_ok else f"✗ Trend(EMA20={ema_f:.2f} < EMA50={ema_s:.2f})"
+                    b = "✓ BB"    if c2_ok else f"✗ BB({bb_pct_val:.2f} need <{BB_ENTRY})"
+                    r = "✓ RSI"   if c3_ok else f"✗ RSI({last['rsi']:.1f} need <{RSI_BUY})"
+                    m = "✓ MACD"  if c4_ok else f"✗ MACD({macd_sign}{macd_hist:.4f} need >0)"
 
                     state = "IN TRADE" if in_pos else ("** BUY **" if all_ok else "waiting")
                     log(f"  {symbol:<10} ${price:>12,.4f}  RSI={last['rsi']:4.1f}  BB={bb_pct_val:.2f}  MACD={macd_sign}{macd_hist:.4f}  [{state}]")
-                    log(f"  {'':10}  Trend:{t}  BB:{b}  RSI:{r}  MACD:{m}  {'→ ALL MET' if all_ok else ''}")
+                    log(f"           {t}   {b}   {r}   {m}   {'→ OPENING TRADE' if all_ok else ''}")
 
                     # ── MANAGE OPEN POSITION ──────────────────────
                     if in_pos:
