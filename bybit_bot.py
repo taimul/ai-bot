@@ -12,9 +12,9 @@
                OR  MACD turns bearish   OR  15m trend broken
   TARGET     : 3–10 signals per hour across 15 pairs
 
-  PROTECTION (PC-OFF SAFE):
-    - Stop Loss & Take Profit placed ON BYBIT SERVERS at entry
-    - Trailing Stop managed by bot (best effort)
+  PROTECTION:
+    - Stop Loss & Take Profit checked in software every cycle
+    - Trailing Stop ratchets SL up as price rises
     - State saved to JSON — bot recovers open trades on restart
     - If bot restarts it re-attaches to existing open positions
 ================================================================
@@ -280,7 +280,6 @@ def update_sl_on_exchange(symbol, new_sl_price):
 
 def round_qty(symbol, qty):
     """Floor-round coin quantity to avoid 'insufficient balance' on sell."""
-    import math
     price = get_price(symbol)
     if price >= 100:   return math.floor(qty * 100) / 100   # 2 decimals
     if price >= 1:     return math.floor(qty * 10)  / 10    # 1 decimal
@@ -513,7 +512,7 @@ def run_bot():
     log("  DUAL-TIMEFRAME BOLLINGER BAND SCALP BOT — Bybit TESTNET")
     log(f"  Pairs      : {', '.join(SYMBOLS)}")
     log(f"  Timeframes : {INTERVAL_15M}m trend  +  {INTERVAL_5M}m entry")
-    log(f"  SL/TP      : SET ON BYBIT SERVERS (safe if PC turns off)")
+    log(f"  SL/TP      : Software-managed (SL/TP checked every cycle)")
     log(f"  SL: -{STOP_LOSS_PCT*100:.1f}%  |  TP: +{TAKE_PROFIT_PCT*100:.1f}%  |  Trail: {TRAIL_STOP_PCT*100:.1f}%")
     log(f"  Risk/Trade : {RISK_PCT*100:.0f}% of balance  |  Max Pos: {MAX_POSITIONS}")
     log(f"  Target     : 3–10 signals/hour across {len(SYMBOLS)} pairs")
@@ -661,9 +660,22 @@ def run_bot():
 
                     # ── MANAGE OPEN POSITION ──────────────────────
                     if in_pos:
-                        ep      = entry_prices[symbol]
-                        high    = highest_price[symbol]
-                        bb_tp   = bb_mid_at_entry[symbol]
+                        ep   = entry_prices[symbol]
+                        high = highest_price[symbol]
+                        bb_tp = bb_mid_at_entry[symbol]
+
+                        # Dust / stale state guard: if rounded qty is 0, clear state
+                        sellable = round_qty(symbol, qty)
+                        if sellable == 0.0:
+                            log(f"  {symbol}: Dust/stale position ({qty:.4f} coins) — clearing state", "WARN")
+                            entry_prices[symbol] = highest_price[symbol] = entry_usdt[symbol] = 0.0
+                            bb_mid_at_entry[symbol] = sl_prices[symbol] = tp_prices[symbol] = 0.0
+                            entry_rsi[symbol] = entry_bb[symbol] = entry_macd[symbol] = entry_trend_gap[symbol] = 0.0
+                            save_state(entry_prices, highest_price, entry_usdt,
+                                       bb_mid_at_entry, sl_prices, tp_prices,
+                                       trade_count, win_count, total_pnl)
+                            continue
+
                         pnl_pct = (price - ep) / ep if ep > 0 else 0
                         pnl_usd  = (price - ep) * qty
                         pnl_sign = "+" if pnl_usd >= 0 else ""
@@ -682,7 +694,6 @@ def run_bot():
                                 sign = "+" if pnl >= 0 else ""
                                 log(f"    {reason.upper()} | P&L: {sign}${pnl:.2f} ({pnl_pct*100:.1f}%)", "SELL")
                                 log_trade(symbol, "SELL", price, entry_usdt[symbol], ep, pnl, reason)
-                                # Feed learning engine
                                 learner.record(
                                     symbol          = symbol,
                                     entry_rsi       = entry_rsi[symbol],
@@ -699,8 +710,7 @@ def run_bot():
                                            bb_mid_at_entry, sl_prices, tp_prices,
                                            trade_count, win_count, total_pnl)
 
-                        # Trailing Stop — tighten the exchange SL as price rises
-                        # (SL/TP already on exchange, this just improves the SL)
+                        # Trailing Stop — tighten SL as price rises (software-only)
                         if pnl_pct > 0.01:
                             trail_sl = high * (1 - TRAIL_STOP_PCT)
                             if trail_sl > sl_prices[symbol]:
@@ -710,12 +720,23 @@ def run_bot():
                                            bb_mid_at_entry, sl_prices, tp_prices,
                                            trade_count, win_count, total_pnl)
 
-                        # BB midline target reached → sell (indicator exit)
-                        if bb_tp > 0 and price >= bb_tp:
+                        # ── Exit priority (first match wins) ─────────
+                        # 1. Software Stop Loss
+                        if sl_prices[symbol] > 0 and price <= sl_prices[symbol]:
+                            log(f"    STOP LOSS hit @ ${price:.4f} (SL=${sl_prices[symbol]:.4f})", "SELL")
+                            close_trade("stop_loss")
+
+                        # 2. Software Take Profit
+                        elif tp_prices[symbol] > 0 and price >= tp_prices[symbol]:
+                            log(f"    TAKE PROFIT hit @ ${price:.4f} (TP=${tp_prices[symbol]:.4f})", "SELL")
+                            close_trade("take_profit")
+
+                        # 3. BB midline target
+                        elif bb_tp > 0 and price >= bb_tp:
                             log(f"    BB MIDLINE hit @ ${price:.4f} (target ${bb_tp:.4f})", "SELL")
                             close_trade("bb_midline")
 
-                        # Indicator sell signal
+                        # 4. Indicator sell signal
                         elif sell_signal(df, trend_ok):
                             log(f"    SELL SIGNAL | RSI={last['rsi']:.1f} BB={bb_pct_val:.2f}", "SELL")
                             close_trade("signal")

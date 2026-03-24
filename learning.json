@@ -15,6 +15,17 @@
       "exit_reason": "bb_midline",
       "pnl_pct": 5.9559,
       "win": true
+    },
+    {
+      "time": "2026-03-24T16:49:06.800193",
+      "symbol": "SOLUSDT",
+      "entry_rsi": 49.4,
+      "entry_bb": 0.494,
+      "entry_macd": 0.02594,
+      "entry_trend_gap": 1.1607,
+      "exit_reason": "stop_loss",
+      "pnl_pct": -3.028,
+      "win": false
     }
   ],
   "symbol_stats": {
@@ -24,7 +35,7 @@
     },
     "SOLUSDT": {
       "wins": 0,
-      "losses": 0
+      "losses": 1
     },
     "XRPUSDT": {
       "wins": 0,
