@@ -1,16 +1,16 @@
 {
-  "saved_at": "2026-03-24T17:56:05.232724",
-  "trade_count": 10,
+  "saved_at": "2026-03-24T18:01:34.341908",
+  "trade_count": 11,
   "win_count": 7,
   "total_pnl": 25.430170087116636,
   "positions": {
-    "ETHUSDT": {
-      "entry_price": 2157.6,
-      "highest_price": 2157.6,
+    "TRXUSDT": {
+      "entry_price": 0.30999,
+      "highest_price": 0.30999,
       "entry_usdt": 200,
-      "bb_mid_at_entry": 2158.464,
-      "sl_price": 2125.236,
-      "tp_price": 2189.9639999999995
+      "bb_mid_at_entry": 0.3125235,
+      "sl_price": 0.30534015,
+      "tp_price": 0.31463984999999994
     }
   }
 }
