@@ -391,7 +391,7 @@ def round_qty(symbol, qty):
     price = get_price(symbol)
     if price >= 1000:  return math.floor(qty * 10000) / 10000  # 4 dp  (ETH)
     if price >= 10:    return math.floor(qty * 1000)  / 1000   # 3 dp  (SOL, BNB)
-    if price >= 1:     return math.floor(qty * 10)    / 10     # 1 dp  (XRP, ADA, TRX)
+    if price >= 0.1:   return math.floor(qty * 10)    / 10     # 1 dp  (XRP, ADA, TRX — even sub-$1)
     return             float(math.floor(qty))                   # int   (very cheap)
 
 def place_sell(symbol, coin_qty, reason="signal"):
