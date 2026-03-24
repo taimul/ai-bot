@@ -25,6 +25,7 @@ import csv
 import os
 import json
 import math
+import argparse
 import pandas as pd
 from datetime import datetime
 from pybit.unified_trading import HTTP
@@ -59,7 +60,7 @@ TRAIL_STOP_PCT   = 0.008
 MAX_POSITIONS    = 6
 DAILY_LOSS_LIMIT = 0.05
 MIN_TRADE_USDT   = 5
-MAX_ORDER_USDT   = 200    # Hard cap per order — prevents oversized orders on testnet
+MAX_ORDER_USDT   = 90     # Hard cap per order — set to $90 as requested
 
 # -- Indicators --
 RSI_PERIOD   = 14
@@ -1174,4 +1175,15 @@ def run_bot():
         time.sleep(SLEEP_SEC)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Bybit testnet scalp bot")
+    parser.add_argument("--reset", action="store_true",
+                        help="Clear saved state and trade log before starting")
+    args = parser.parse_args()
+
+    if args.reset:
+        clear_state()
+        if os.path.exists(TRADE_LOG):
+            os.remove(TRADE_LOG)
+        log("Reset done: state + trade log cleared. Starting from zero.", "WARN")
+
     run_bot()
