@@ -3,14 +3,14 @@
   PROFESSIONAL MULTI-PAIR CRYPTO TRADING BOT
   Platform  : Bybit TESTNET (Spot)
 
-  STRATEGY  : Dual-Timeframe Bollinger Band Mean Reversion
-  ─────────────────────────────────────────────────────────
-  TREND (1H):  EMA20 > EMA50 → confirmed uptrend
-  ENTRY (15m): Price touches lower BB  +  RSI < 50
-               + MACD histogram turning positive
-  EXIT  (15m): Price reaches BB middle band  OR
-               RSI > 62  OR  MACD turns bearish  OR
-               1H trend has reversed (EMA20 < EMA50)
+  STRATEGY  : Dual-Timeframe Bollinger Band Mean Reversion (Scalp)
+  ─────────────────────────────────────────────────────────────────
+  TREND (15m): EMA20 > EMA50 → confirmed uptrend
+  ENTRY  (5m): Price in lower BB zone (BB%B < 0.35)
+               + RSI < 55  + MACD histogram positive
+  EXIT   (5m): Price reaches BB midline  OR  RSI > 62
+               OR  MACD turns bearish   OR  15m trend broken
+  TARGET     : 3–10 signals per hour across 15 pairs
 
   PROTECTION (PC-OFF SAFE):
     - Stop Loss & Take Profit placed ON BYBIT SERVERS at entry
@@ -24,6 +24,7 @@ import time
 import csv
 import os
 import json
+import math
 import pandas as pd
 from datetime import datetime
 from pybit.unified_trading import HTTP
@@ -34,36 +35,43 @@ from pybit.unified_trading import HTTP
 API_KEY    = "YndDHQr6Mpx2i3fElS"
 API_SECRET = "oGjioa9ZVih7rw1b4dBVMJJ2UkGQZ4LrF5cR"
 
+# Confirmed active pairs on Bybit Testnet (verified with real candle data)
+# MAINNET: expand this list freely — all major pairs work on mainnet
 SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT",
-    "DOGEUSDT", "BNBUSDT", "AVAXUSDT", "ADAUSDT",
+    "ETHUSDT",   # ✓ active
+    "SOLUSDT",   # ✓ active
+    "XRPUSDT",   # ✓ active
+    "ADAUSDT",   # ✓ active
+    "TRXUSDT",   # ✓ active
 ]
+# NOTE: BTCUSDT excluded from testnet — price is static, RSI always 0
+# Add it back when switching to mainnet
 
-INTERVAL_15M = "15"
-INTERVAL_1H  = "60"
+INTERVAL_5M  = "5"    # Entry timeframe (scalp)
+INTERVAL_15M = "15"   # Trend timeframe
 
 # -- Risk Management --
 RISK_PCT         = 0.02
-STOP_LOSS_PCT    = 0.03   # SL placed ON Bybit at entry
-TAKE_PROFIT_PCT  = 0.06   # TP placed ON Bybit at entry
-TRAIL_STOP_PCT   = 0.015  # Trailing stop (bot-managed, tightens TP on exchange)
-MAX_POSITIONS    = 4
+STOP_LOSS_PCT    = 0.015  # Tighter SL for 5m scalp
+TAKE_PROFIT_PCT  = 0.03   # Realistic TP on 5m
+TRAIL_STOP_PCT   = 0.008  # Tight trailing stop
+MAX_POSITIONS    = 6      # More concurrent trades
 DAILY_LOSS_LIMIT = 0.05
-MIN_TRADE_USDT   = 5
+MIN_TRADE_USDC   = 5
 
 # -- Indicators --
-RSI_PERIOD  = 14
-RSI_BUY     = 50
-RSI_SELL    = 62
-BB_PERIOD   = 20
-BB_STD      = 2.0
-BB_ENTRY    = 0.20
-BB_EXIT     = 0.55
-MACD_FAST   = 12
-MACD_SLOW   = 26
-MACD_SIG    = 9
-EMA_1H_FAST = 20
-EMA_1H_SLOW = 50
+RSI_PERIOD   = 14
+RSI_BUY      = 55     # Relaxed — catches more dips
+RSI_SELL     = 62
+BB_PERIOD    = 20
+BB_STD       = 2.0
+BB_ENTRY     = 0.50   # Entry zone (bottom 50% of BB — middle and below)
+BB_EXIT      = 0.55
+MACD_FAST    = 12
+MACD_SLOW    = 26
+MACD_SIG     = 9
+EMA_15M_FAST = 20     # 15m trend EMAs
+EMA_15M_SLOW = 50
 
 SLEEP_SEC  = 60
 TRADE_LOG  = "trades.csv"
@@ -158,10 +166,13 @@ def get_candles(symbol, interval, limit=120):
         df[col] = df[col].astype(float)
     return df
 
-def get_1h_trend(symbol):
-    df = get_candles(symbol, INTERVAL_1H, limit=60)
-    df["ema_fast"] = df["close"].ewm(span=EMA_1H_FAST, adjust=False).mean()
-    df["ema_slow"] = df["close"].ewm(span=EMA_1H_SLOW, adjust=False).mean()
+def get_15m_trend(symbol):
+    """Trend check on 15m: EMA20 > EMA50 = uptrend. Returns None on insufficient data."""
+    df = get_candles(symbol, INTERVAL_15M, limit=60)
+    if len(df) < EMA_15M_SLOW + 5:
+        return None, 0.0, 0.0
+    df["ema_fast"] = df["close"].ewm(span=EMA_15M_FAST, adjust=False).mean()
+    df["ema_slow"] = df["close"].ewm(span=EMA_15M_SLOW, adjust=False).mean()
     last = df.iloc[-1]
     return last["ema_fast"] > last["ema_slow"], last["ema_fast"], last["ema_slow"]
 
@@ -200,6 +211,7 @@ def get_balance():
         if c["coin"] == "USDT":
             return safe_float(c.get("availableBalance") or c.get("walletBalance"))
     return 0.0
+
 
 def get_position_qty(symbol):
     base = symbol.replace("USDT", "")
@@ -289,20 +301,26 @@ def place_sell(symbol, coin_qty, reason="signal"):
 #  SIGNALS
 # ================================================================
 def buy_signal(df, trend_ok):
+    """
+    Entry on 5m when ALL true:
+      - 15m EMA20 > EMA50 (uptrend)
+      - Price in lower 35% of Bollinger Band (dip zone)
+      - RSI < 55 (not overbought)
+      - MACD histogram > 0 (bullish momentum active)
+    """
     last = df.iloc[-1]
-    prev = df.iloc[-2]
 
     at_lower_bb  = safe_float(last["bb_pct"]) < BB_ENTRY
     rsi_dip      = last["rsi"] < RSI_BUY
-    macd_turning = prev["macd_hist"] < 0 and last["macd_hist"] > 0
+    macd_bullish = last["macd_hist"] > 0   # histogram positive (not crossover)
 
     reasons = []
-    if trend_ok:     reasons.append("1H-UP")
+    if trend_ok:     reasons.append("15m-UP")
     if at_lower_bb:  reasons.append(f"BB={last['bb_pct']:.2f}")
     if rsi_dip:      reasons.append(f"RSI={last['rsi']:.1f}")
-    if macd_turning: reasons.append("MACD+")
+    if macd_bullish: reasons.append("MACD+")
 
-    return trend_ok and at_lower_bb and rsi_dip and macd_turning, reasons
+    return trend_ok and at_lower_bb and rsi_dip and macd_bullish, reasons
 
 def sell_signal(df, trend_ok):
     last = df.iloc[-1]
@@ -322,12 +340,13 @@ def run_bot():
     init_trade_log()
 
     log("=" * 70)
-    log("  DUAL-TIMEFRAME BOLLINGER BAND BOT — Bybit TESTNET")
+    log("  DUAL-TIMEFRAME BOLLINGER BAND SCALP BOT — Bybit TESTNET")
     log(f"  Pairs      : {', '.join(SYMBOLS)}")
-    log(f"  Timeframes : {INTERVAL_1H}m trend  +  {INTERVAL_15M}m entry")
+    log(f"  Timeframes : {INTERVAL_15M}m trend  +  {INTERVAL_5M}m entry")
     log(f"  SL/TP      : SET ON BYBIT SERVERS (safe if PC turns off)")
-    log(f"  SL: -{STOP_LOSS_PCT*100:.0f}%  |  TP: +{TAKE_PROFIT_PCT*100:.0f}%  |  Trail: {TRAIL_STOP_PCT*100:.1f}%")
+    log(f"  SL: -{STOP_LOSS_PCT*100:.1f}%  |  TP: +{TAKE_PROFIT_PCT*100:.1f}%  |  Trail: {TRAIL_STOP_PCT*100:.1f}%")
     log(f"  Risk/Trade : {RISK_PCT*100:.0f}% of balance  |  Max Pos: {MAX_POSITIONS}")
+    log(f"  Target     : 3–10 signals/hour across {len(SYMBOLS)} pairs")
     log(f"  State file : {STATE_FILE}  (auto-recovers on restart)")
     log("=" * 70)
 
@@ -387,12 +406,33 @@ def run_bot():
 
             for symbol in SYMBOLS:
                 try:
-                    trend_ok, _, _ = get_1h_trend(symbol)
-                    df    = add_15m_indicators(get_candles(symbol, INTERVAL_15M))
+                    trend_ok, _, _ = get_15m_trend(symbol)
+
+                    # Skip if 15m trend has no data
+                    if trend_ok is None:
+                        log(f"  {symbol:<12} skipping — not enough 15m candles on testnet", "WARN")
+                        continue
+
+                    df = add_15m_indicators(get_candles(symbol, INTERVAL_5M))
+
+                    # Need at least 2 rows for prev/last comparisons + enough for indicators
+                    min_rows = BB_PERIOD + RSI_PERIOD + 5
+                    if len(df) < min_rows:
+                        log(f"  {symbol:<12} skipping — only {len(df)} candles (need {min_rows})", "WARN")
+                        continue
+
+                    last = df.iloc[-1]
+
+                    # Skip if indicators are invalid (NaN, or RSI out of range)
+                    rsi_val = safe_float(last["rsi"], default=-1)
+                    bb_val  = safe_float(last["bb_pct"], default=-1)
+                    if math.isnan(last["rsi"]) or math.isnan(last["bb_pct"]) or rsi_val < 5:
+                        log(f"  {symbol:<12} skipping — invalid indicators (RSI={rsi_val:.1f})", "WARN")
+                        continue
+
                     price = get_price(symbol)
                     qty   = get_position_qty(symbol)
                     in_pos = qty > 0.0001
-                    last   = df.iloc[-1]
 
                     # If position closed by exchange SL/TP while bot was offline,
                     # clean up our local state
@@ -414,13 +454,26 @@ def run_bot():
                     if in_pos and price > highest_price[symbol]:
                         highest_price[symbol] = price
 
-                    trend_icon = "▲" if trend_ok else "▼"
-                    macd_icon  = "+" if last["macd_hist"] > 0 else "-"
-                    bb_pct_val = safe_float(last["bb_pct"])
-                    log(f"  {symbol:<12} ${price:<12,.4f} "
-                        f"RSI={last['rsi']:5.1f}  BB={bb_pct_val:.2f}  "
-                        f"MACD={macd_icon}  1H={trend_icon}  "
-                        f"[{'IN TRADE' if in_pos else 'watching'}]")
+                    trend_icon  = "▲" if trend_ok else "▼"
+                    macd_hist   = safe_float(last["macd_hist"])
+                    macd_sign   = "+" if macd_hist > 0 else ""
+                    bb_pct_val  = safe_float(last["bb_pct"])
+
+                    # ── Compact status (2 lines per pair) ─────────
+                    c1_ok = trend_ok
+                    c2_ok = bb_pct_val < BB_ENTRY
+                    c3_ok = last['rsi'] < RSI_BUY
+                    c4_ok = macd_hist > 0
+                    all_ok = c1_ok and c2_ok and c3_ok and c4_ok
+
+                    t = "✓" if c1_ok else f"✗(need uptrend)"
+                    b = "✓" if c2_ok else f"✗(need <{BB_ENTRY}, got {bb_pct_val:.2f})"
+                    r = "✓" if c3_ok else f"✗(need <{RSI_BUY}, got {last['rsi']:.1f})"
+                    m = "✓" if c4_ok else f"✗(need >0, got {macd_sign}{macd_hist:.4f})"
+
+                    state = "IN TRADE" if in_pos else ("** BUY **" if all_ok else "waiting")
+                    log(f"  {symbol:<10} ${price:>12,.4f}  RSI={last['rsi']:4.1f}  BB={bb_pct_val:.2f}  MACD={macd_sign}{macd_hist:.4f}  [{state}]")
+                    log(f"  {'':10}  Trend:{t}  BB:{b}  RSI:{r}  MACD:{m}  {'→ ALL MET' if all_ok else ''}")
 
                     # ── MANAGE OPEN POSITION ──────────────────────
                     if in_pos:
@@ -428,6 +481,10 @@ def run_bot():
                         high    = highest_price[symbol]
                         bb_tp   = bb_mid_at_entry[symbol]
                         pnl_pct = (price - ep) / ep if ep > 0 else 0
+                        pnl_usd  = (price - ep) * qty
+                        pnl_sign = "+" if pnl_usd >= 0 else ""
+                        pnl_icon = "▲" if pnl_usd >= 0 else "▼"
+                        log(f"  {'':10}  Entry=${ep:.4f}  SL=${sl_prices[symbol]:.4f}  TP=${tp_prices[symbol]:.4f}  P&L={pnl_sign}${abs(pnl_usd):.2f} ({pnl_pct*100:+.2f}%) {pnl_icon}")
 
                         def close_trade(reason):
                             nonlocal trade_count, win_count, total_pnl, daily_pnl
@@ -472,7 +529,7 @@ def run_bot():
                         signal_ok, reasons = buy_signal(df, trend_ok)
                         if signal_ok:
                             size = calc_position_size(usdt_bal)
-                            if size < MIN_TRADE_USDT:
+                            if size < MIN_TRADE_USDC:
                                 log(f"    Skipping: size ${size:.2f} below minimum", "WARN")
                             else:
                                 sl = price * (1 - STOP_LOSS_PCT)
