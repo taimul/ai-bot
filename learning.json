@@ -1,0 +1,141 @@
+{
+  "params": {
+    "RSI_BUY": 56,
+    "BB_ENTRY": 0.5,
+    "MACD_MIN": 0.0
+  },
+  "trades": [
+    {
+      "time": "2026-03-24T17:39:48.537760",
+      "symbol": "TRXUSDT",
+      "entry_rsi": 44.62,
+      "entry_bb": 0.467,
+      "entry_macd": 1e-05,
+      "entry_trend_gap": 0.0014,
+      "exit_reason": "take_profit",
+      "pnl_pct": 1.9467,
+      "win": true
+    },
+    {
+      "time": "2026-03-24T17:43:04.254085",
+      "symbol": "TRXUSDT",
+      "entry_rsi": 50.46,
+      "entry_bb": 0.41,
+      "entry_macd": 0.00014,
+      "entry_trend_gap": 0.0012,
+      "exit_reason": "take_profit",
+      "pnl_pct": 4.2208,
+      "win": true
+    },
+    {
+      "time": "2026-03-24T17:44:07.302710",
+      "symbol": "SOLUSDT",
+      "entry_rsi": 51.59,
+      "entry_bb": 0.407,
+      "entry_macd": 0.04529,
+      "entry_trend_gap": 1.052,
+      "exit_reason": "stop_loss",
+      "pnl_pct": -4.1783,
+      "win": false
+    },
+    {
+      "time": "2026-03-24T17:45:15.200160",
+      "symbol": "TRXUSDT",
+      "entry_rsi": 51.07,
+      "entry_bb": 0.451,
+      "entry_macd": 0.00026,
+      "entry_trend_gap": 0.0013,
+      "exit_reason": "bb_midline",
+      "pnl_pct": 1.0742,
+      "win": true
+    },
+    {
+      "time": "2026-03-24T17:47:24.148359",
+      "symbol": "ADAUSDT",
+      "entry_rsi": 50.72,
+      "entry_bb": 0.497,
+      "entry_macd": 0.0002,
+      "entry_trend_gap": 0.0018,
+      "exit_reason": "bb_midline",
+      "pnl_pct": 0.7576,
+      "win": true
+    },
+    {
+      "time": "2026-03-24T17:48:30.433490",
+      "symbol": "TRXUSDT",
+      "entry_rsi": 52.87,
+      "entry_bb": 0.386,
+      "entry_macd": 0.00014,
+      "entry_trend_gap": 0.0012,
+      "exit_reason": "stop_loss",
+      "pnl_pct": -2.4628,
+      "win": false
+    },
+    {
+      "time": "2026-03-24T17:50:40.972569",
+      "symbol": "ADAUSDT",
+      "entry_rsi": 50.72,
+      "entry_bb": 0.497,
+      "entry_macd": 0.0002,
+      "entry_trend_gap": 0.0018,
+      "exit_reason": "stop_loss",
+      "pnl_pct": -1.8939,
+      "win": false
+    },
+    {
+      "time": "2026-03-24T17:51:47.757728",
+      "symbol": "TRXUSDT",
+      "entry_rsi": 49.86,
+      "entry_bb": 0.293,
+      "entry_macd": 0.00026,
+      "entry_trend_gap": 0.0016,
+      "exit_reason": "take_profit",
+      "pnl_pct": 6.244,
+      "win": true
+    },
+    {
+      "time": "2026-03-24T17:52:52.139406",
+      "symbol": "ADAUSDT",
+      "entry_rsi": 52.94,
+      "entry_bb": 0.289,
+      "entry_macd": 9e-05,
+      "entry_trend_gap": 0.0018,
+      "exit_reason": "take_profit",
+      "pnl_pct": 3.0769,
+      "win": true
+    },
+    {
+      "time": "2026-03-24T17:55:03.228564",
+      "symbol": "TRXUSDT",
+      "entry_rsi": 50.0,
+      "entry_bb": 0.303,
+      "entry_macd": 0.00029,
+      "entry_trend_gap": 0.001,
+      "exit_reason": "take_profit",
+      "pnl_pct": 3.93,
+      "win": true
+    }
+  ],
+  "symbol_stats": {
+    "ETHUSDT": {
+      "wins": 0,
+      "losses": 0
+    },
+    "SOLUSDT": {
+      "wins": 0,
+      "losses": 1
+    },
+    "XRPUSDT": {
+      "wins": 0,
+      "losses": 0
+    },
+    "ADAUSDT": {
+      "wins": 2,
+      "losses": 1
+    },
+    "TRXUSDT": {
+      "wins": 5,
+      "losses": 1
+    }
+  }
+}
