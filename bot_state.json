@@ -1,16 +1,7 @@
 {
-  "saved_at": "2026-03-24T18:01:34.341908",
-  "trade_count": 11,
+  "saved_at": "2026-03-24T18:07:01.475093",
+  "trade_count": 13,
   "win_count": 7,
-  "total_pnl": 25.430170087116636,
-  "positions": {
-    "TRXUSDT": {
-      "entry_price": 0.30999,
-      "highest_price": 0.30999,
-      "entry_usdt": 200,
-      "bb_mid_at_entry": 0.3125235,
-      "sl_price": 0.30534015,
-      "tp_price": 0.31463984999999994
-    }
-  }
+  "total_pnl": 13.95926593884388,
+  "positions": {}
 }

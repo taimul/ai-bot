@@ -125,6 +125,28 @@
       "exit_reason": "signal",
       "pnl_pct": 0.0,
       "win": false
+    },
+    {
+      "time": "2026-03-24T18:02:40.632646",
+      "symbol": "TRXUSDT",
+      "entry_rsi": 48.5,
+      "entry_bb": 0.444,
+      "entry_macd": 3e-05,
+      "entry_trend_gap": 0.0015,
+      "exit_reason": "stop_loss",
+      "pnl_pct": -2.2194,
+      "win": false
+    },
+    {
+      "time": "2026-03-24T18:07:01.474054",
+      "symbol": "TRXUSDT",
+      "entry_rsi": 49.04,
+      "entry_bb": 0.5,
+      "entry_macd": 0.00011,
+      "entry_trend_gap": 0.0016,
+      "exit_reason": "stop_loss",
+      "pnl_pct": -3.516,
+      "win": false
     }
   ],
   "symbol_stats": {
@@ -146,7 +168,7 @@
     },
     "TRXUSDT": {
       "wins": 5,
-      "losses": 1
+      "losses": 3
     }
   }
 }
