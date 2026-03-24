@@ -2,7 +2,8 @@
   "params": {
     "RSI_BUY": 56,
     "BB_ENTRY": 0.5,
-    "MACD_MIN": 0.0
+    "MACD_MIN": 0.0,
+    "TREND_GAP_MIN": 0.0
   },
   "trades": [
     {
@@ -213,8 +214,21 @@
       "exit_reason": "take_profit",
       "pnl_pct": 3.0829,
       "win": true
+    },
+    {
+      "time": "2026-03-24T18:32:49.677148",
+      "symbol": "TRXUSDT",
+      "entry_rsi": 53.65,
+      "entry_bb": 0.496,
+      "entry_macd": 0.00055,
+      "entry_trend_gap": 0.0018,
+      "exit_reason": "take_profit",
+      "pnl_pct": 8.4894,
+      "win": true,
+      "hour": 18
     }
   ],
+  "daily_summaries": [],
   "symbol_stats": {
     "ETHUSDT": {
       "wins": 1,
@@ -233,8 +247,32 @@
       "losses": 2
     },
     "TRXUSDT": {
-      "wins": 6,
-      "losses": 3
+      "wins": 7,
+      "losses": 3,
+      "consec_losses": 0
     }
-  }
+  },
+  "symbol_params": {
+    "ETHUSDT": {
+      "RSI_BUY": 55,
+      "BB_ENTRY": 0.5
+    },
+    "SOLUSDT": {
+      "RSI_BUY": 55,
+      "BB_ENTRY": 0.5
+    },
+    "XRPUSDT": {
+      "RSI_BUY": 55,
+      "BB_ENTRY": 0.5
+    },
+    "ADAUSDT": {
+      "RSI_BUY": 55,
+      "BB_ENTRY": 0.5
+    },
+    "TRXUSDT": {
+      "RSI_BUY": 55,
+      "BB_ENTRY": 0.5
+    }
+  },
+  "avoid_hours": []
 }
