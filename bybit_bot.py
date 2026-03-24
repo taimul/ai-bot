@@ -40,6 +40,7 @@ API_SECRET = "oGjioa9ZVih7rw1b4dBVMJJ2UkGQZ4LrF5cR"
 # Confirmed active pairs on Bybit Testnet (verified with real candle data)
 # MAINNET: expand this list freely — all major pairs work on mainnet
 SYMBOLS = [
+    "XRPUSDT",   # ✓ active
     "ETHUSDT",   # ✓ active
     "SOLUSDT",   # ✓ active
     "XRPUSDT",   # ✓ active
@@ -518,6 +519,7 @@ class LearningEngine:
             "symbol_stats":    self.symbol_stats,
             "symbol_params":   self.symbol_params,
             "avoid_hours":     self.avoid_hours,
+            "cooldowns":       {s: t.isoformat() for s, t in self.cooldowns.items()},
         }
         with open(LEARN_FILE, "w") as f:
             json.dump(data, f, indent=2)
@@ -534,6 +536,12 @@ class LearningEngine:
             self.symbol_stats    = data.get("symbol_stats",    self.symbol_stats)
             self.symbol_params   = data.get("symbol_params",   self.symbol_params)
             self.avoid_hours     = data.get("avoid_hours",     [])
+            # Restore cooldowns, dropping any that already expired
+            now = datetime.now()
+            for s, iso in data.get("cooldowns", {}).items():
+                expiry = datetime.fromisoformat(iso)
+                if expiry > now:
+                    self.cooldowns[s] = expiry
             # Ensure TREND_GAP_MIN exists in older files
             self.params.setdefault("TREND_GAP_MIN", 0.0)
             log(f"LEARN  {len(self.trades)} trades | {len(self.daily_summaries)} days | "

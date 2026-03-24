@@ -601,8 +601,8 @@
     },
     "SOLUSDT": {
       "wins": 0,
-      "losses": 4,
-      "consec_losses": 3
+      "losses": 0,
+      "consec_losses": 0
     },
     "XRPUSDT": {
       "wins": 0,
