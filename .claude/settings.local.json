@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -m py_compile bybit_bot.py)"
+      "Bash(python -m py_compile bybit_bot.py)",
+      "Bash(taskkill /F /FI \"WINDOWTITLE eq python*\")",
+      "Bash(pkill -f \"bhthpdlym\\\\|b4qzzbn4x\")"
     ]
   }
 }

@@ -152,6 +152,92 @@ def clear_state():
     if os.path.exists(STATE_FILE):
         os.remove(STATE_FILE)
 
+
+# ================================================================
+#  STARTUP SWEEP — convert leftover coins back to USDT
+# ================================================================
+def sweep_coins_to_usdt(protected_coins=None):
+    """
+    Sell all non-USDT coin balances back to USDT at bot startup.
+    Skips coins that are in active positions (protected_coins set).
+    This ensures all capital is liquid before the main loop begins.
+    """
+    protected_coins = protected_coins or set()
+    MIN_SWEEP_USD   = 1.0   # ignore dust below $1
+
+    log("SWEEP  Checking for non-USDT balances to convert...", "WARN")
+    try:
+        resp  = session.get_wallet_balance(accountType="UNIFIED")
+        coins = resp["result"]["list"][0]["coin"]
+    except Exception as e:
+        log(f"SWEEP  Could not fetch wallet: {e}", "ERR")
+        return
+
+    swept_any = False
+    for c in coins:
+        coin = c["coin"]
+        if coin == "USDT":
+            continue
+
+        bal = safe_float(c.get("availableBalance") or c.get("walletBalance"))
+        if bal <= 0:
+            continue
+
+        # Skip coins the bot currently holds as open positions
+        if coin in protected_coins:
+            log(f"SWEEP  {coin:<6} — skipped (active position)", "WARN")
+            continue
+
+        symbol = f"{coin}USDT"
+        price  = get_price(symbol)
+        if price <= 0:
+            log(f"SWEEP  {coin:<6} — skipped (no price feed)", "WARN")
+            continue
+
+        usd_value = bal * price
+        if usd_value < MIN_SWEEP_USD:
+            log(f"SWEEP  {coin:<6} {bal:.6f} (~${usd_value:.4f}) — dust, skipping", "WARN")
+            continue
+
+        sell_qty = round_qty(symbol, bal)
+        if sell_qty <= 0:
+            log(f"SWEEP  {coin:<6} {bal:.6f} — rounds to 0, skipping", "WARN")
+            continue
+
+        log(f"SWEEP  {coin:<6} {bal:.6f} (~${usd_value:.2f}) → selling {sell_qty} for USDT", "WARN")
+        # Split into chunks ≤ MAX_ORDER_USDT to respect per-order exchange limits
+        chunk_coins = math.floor(MAX_ORDER_USDT / price) if price > 0 else sell_qty
+        chunk_coins = max(chunk_coins, 1)
+        remaining   = sell_qty
+        chunk_ok    = True
+        while remaining > 0 and chunk_ok:
+            chunk = min(remaining, chunk_coins)
+            chunk = round_qty(symbol, chunk)
+            if chunk <= 0:
+                break
+            try:
+                resp = session.place_order(
+                    category  = "spot",
+                    symbol    = symbol,
+                    side      = "Sell",
+                    orderType = "Market",
+                    qty       = str(chunk),
+                )
+                log(f"SWEEP  {coin:<6} sold {chunk} | order {resp['result']['orderId']}", "WARN")
+                swept_any  = True
+                remaining -= chunk
+                time.sleep(0.4)
+            except Exception as e:
+                log(f"SWEEP  {coin:<6} sell failed: {e}", "ERR")
+                chunk_ok = False
+
+    if swept_any:
+        time.sleep(1.5)   # let fills settle before reading balance
+        log(f"SWEEP  Done. New USDT balance: ${get_balance():.2f}", "WARN")
+    else:
+        log("SWEEP  Nothing to sweep — wallet is clean.", "WARN")
+
+
 # ================================================================
 #  DATA & INDICATORS
 # ================================================================
@@ -214,12 +300,32 @@ def add_15m_indicators(df):
 #  ACCOUNT
 # ================================================================
 def get_balance():
-    resp  = session.get_wallet_balance(accountType="UNIFIED", coin="USDT")
-    coins = resp["result"]["list"][0]["coin"]
-    for c in coins:
-        if c["coin"] == "USDT":
-            return safe_float(c.get("availableBalance") or c.get("walletBalance"))
-    return 0.0
+    """
+    Returns total available USDT + USD value of all held coins.
+    This gives the true portfolio value so position sizing and risk
+    calculations are based on real capital, not just idle USDT.
+    """
+    try:
+        resp  = session.get_wallet_balance(accountType="UNIFIED")
+        coins = resp["result"]["list"][0]["coin"]
+        total = 0.0
+        for c in coins:
+            coin = c["coin"]
+            bal  = safe_float(c.get("availableBalance") or c.get("walletBalance"))
+            if bal <= 0:
+                continue
+            if coin == "USDT":
+                total += bal
+            else:
+                # Convert coin value to USD via live price
+                symbol = f"{coin}USDT"
+                price  = get_price(symbol)
+                if price > 0:
+                    total += bal * price
+        return round(total, 4)
+    except Exception as e:
+        log(f"get_balance error: {e}", "ERR")
+        return 0.0
 
 
 def get_position_qty(symbol):
@@ -283,9 +389,10 @@ def update_sl_on_exchange(symbol, new_sl_price):
 def round_qty(symbol, qty):
     """Floor-round coin quantity to avoid 'insufficient balance' on sell."""
     price = get_price(symbol)
-    if price >= 100:   return math.floor(qty * 100) / 100   # 2 decimals
-    if price >= 1:     return math.floor(qty * 10)  / 10    # 1 decimal
-    return             float(math.floor(qty))                # integer
+    if price >= 1000:  return math.floor(qty * 10000) / 10000  # 4 dp  (ETH)
+    if price >= 10:    return math.floor(qty * 1000)  / 1000   # 3 dp  (SOL, BNB)
+    if price >= 1:     return math.floor(qty * 10)    / 10     # 1 dp  (XRP, ADA, TRX)
+    return             float(math.floor(qty))                   # int   (very cheap)
 
 def place_sell(symbol, coin_qty, reason="signal"):
     try:
@@ -783,6 +890,11 @@ def run_bot():
                 tp_prices[s]       = pos["tp_price"]
                 log(f"  Recovered position: {s} | Entry=${pos['entry_price']:.4f} | "
                     f"SL=${pos['sl_price']:.4f} | TP=${pos['tp_price']:.4f}", "WARN")
+
+    # Sweep leftover coins → USDT before trading begins.
+    # Pass coins with active recovered positions so they aren't sold.
+    protected = {s.replace("USDT", "") for s in SYMBOLS if entry_prices[s] > 0}
+    sweep_coins_to_usdt(protected_coins=protected)
 
     starting_bal = get_balance()
     daily_limit  = starting_bal * DAILY_LOSS_LIMIT
