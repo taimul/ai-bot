@@ -52,12 +52,13 @@ INTERVAL_15M = "15"   # Trend timeframe
 
 # -- Risk Management --
 RISK_PCT         = 0.02
-STOP_LOSS_PCT    = 0.015  # Tighter SL for 5m scalp
-TAKE_PROFIT_PCT  = 0.03   # Realistic TP on 5m
-TRAIL_STOP_PCT   = 0.008  # Tight trailing stop
-MAX_POSITIONS    = 6      # More concurrent trades
+STOP_LOSS_PCT    = 0.015
+TAKE_PROFIT_PCT  = 0.03
+TRAIL_STOP_PCT   = 0.008
+MAX_POSITIONS    = 6
 DAILY_LOSS_LIMIT = 0.05
-MIN_TRADE_USDC   = 5
+MIN_TRADE_USDT   = 5
+MAX_ORDER_USDT   = 200    # Hard cap per order — prevents oversized orders on testnet
 
 # -- Indicators --
 RSI_PERIOD   = 14
@@ -73,9 +74,11 @@ MACD_SIG     = 9
 EMA_15M_FAST = 20     # 15m trend EMAs
 EMA_15M_SLOW = 50
 
-SLEEP_SEC  = 60
-TRADE_LOG  = "trades.csv"
-STATE_FILE = "bot_state.json"   # persists open positions across restarts
+SLEEP_SEC    = 60
+TRADE_LOG    = "trades.csv"
+STATE_FILE   = "bot_state.json"
+LEARN_FILE   = "learning.json"
+LEARN_EVERY  = 5    # retrain after every N completed trades
 # ================================================================
 
 session = HTTP(testnet=True, api_key=API_KEY, api_secret=API_SECRET)
@@ -235,40 +238,47 @@ def get_price(symbol):
 
 def calc_position_size(balance):
     size = (balance * RISK_PCT) / STOP_LOSS_PCT
-    return round(min(size, balance * 0.20), 2)
+    size = min(size, balance * 0.20)   # never more than 20% of balance
+    size = min(size, MAX_ORDER_USDT)   # hard cap — respects exchange limits
+    return round(size, 2)
 
 def round_price(price):
     """Round price to correct decimal places based on price magnitude."""
-    if price >= 100:   return round(price, 2)   # SOL $93, ETH $2169, BTC $89k
-    if price >= 1:     return round(price, 4)   # XRP $1.56, TRX $0.30
-    return             round(price, 6)          # ADA $0.265, DOGE $0.10
+    if price >= 100:  return round(price, 2)   # SOL, ETH, BTC
+    if price >= 1:    return round(price, 4)   # XRP, TRX
+    return            round(price, 4)          # ADA, DOGE — 4 decimals max
 
 # ================================================================
 #  ORDERS  — SL/TP attached to buy order (lives on Bybit servers)
 # ================================================================
 def place_buy(symbol, usdt_amount, sl_price, tp_price):
     """
-    Places a market buy with Stop Loss and Take Profit set directly
-    on Bybit's servers. These will execute even if this bot is offline.
+    Places a market buy order. SL/TP are managed in software by the main loop,
+    and also attempted on the exchange via set_trading_stop after fill.
     """
     try:
         resp = session.place_order(
-            category    = "spot",
-            symbol      = symbol,
-            side        = "Buy",
-            orderType   = "Market",
-            qty         = str(usdt_amount),
-            marketUnit  = "quoteCoin",
-            stopLoss    = str(round_price(sl_price)),   # ← ON BYBIT SERVERS
-            takeProfit  = str(round_price(tp_price)),   # ← ON BYBIT SERVERS
-            slOrderType = "Market",
-            tpOrderType = "Market",
-            tpTriggerBy = "LastPrice",
-            slTriggerBy = "LastPrice",
+            category   = "spot",
+            symbol     = symbol,
+            side       = "Buy",
+            orderType  = "Market",
+            qty        = str(usdt_amount),
+            marketUnit = "quoteCoin",
         )
+        order_id = resp['result']['orderId']
         log(f"BUY  {symbol} | ${usdt_amount:.2f} USDT | "
             f"SL=${round_price(sl_price)} | TP=${round_price(tp_price)} | "
-            f"ID:{resp['result']['orderId']}", "BUY")
+            f"ID:{order_id}", "BUY")
+        # Try to set SL/TP on exchange after fill (best-effort, non-fatal)
+        try:
+            session.set_trading_stop(
+                category   = "spot",
+                symbol     = symbol,
+                stopLoss   = str(round_price(sl_price)),
+                takeProfit = str(round_price(tp_price)),
+            )
+        except Exception:
+            pass  # software SL/TP in main loop will cover this
         return True
     except Exception as e:
         log(f"BUY FAILED {symbol}: {e}", "ERR")
@@ -281,11 +291,9 @@ def update_sl_on_exchange(symbol, new_sl_price):
     """
     try:
         session.set_trading_stop(
-            category    = "spot",
-            symbol      = symbol,
-            stopLoss    = str(round_price(new_sl_price)),
-            slOrderType = "Market",
-            slTriggerBy = "LastPrice",
+            category = "spot",
+            symbol   = symbol,
+            stopLoss = str(round_price(new_sl_price)),
         )
         log(f"  Trail SL updated → ${round_price(new_sl_price)}", "INFO")
     except Exception as e:
@@ -341,10 +349,177 @@ def sell_signal(df, trend_ok):
     return at_midline or rsi_high or macd_bearish or trend_broken
 
 # ================================================================
+#  LEARNING ENGINE
+# ================================================================
+class LearningEngine:
+    """
+    Tracks every trade outcome and automatically adjusts entry parameters.
+    After every LEARN_EVERY trades it analyses what worked and what didn't,
+    then tightens or relaxes RSI / BB / MACD thresholds accordingly.
+    Also ranks symbols by performance and skips consistently losing ones.
+    """
+
+    # Hard boundaries — params never go outside these
+    LIMITS = {
+        "RSI_BUY":  (35,  60),
+        "BB_ENTRY": (0.20, 0.70),
+        "MACD_MIN": (0.0,  0.01),
+    }
+
+    def __init__(self):
+        self.params = {
+            "RSI_BUY":  RSI_BUY,
+            "BB_ENTRY": BB_ENTRY,
+            "MACD_MIN": 0.0,
+        }
+        self.trades      = []   # full history
+        self.symbol_stats = {s: {"wins": 0, "losses": 0} for s in SYMBOLS}
+        self._load()
+
+    # ── Persistence ──────────────────────────────────────────────
+    def _save(self):
+        with open(LEARN_FILE, "w") as f:
+            json.dump({"params": self.params,
+                       "trades": self.trades[-200:],   # keep last 200
+                       "symbol_stats": self.symbol_stats}, f, indent=2)
+
+    def _load(self):
+        if not os.path.exists(LEARN_FILE):
+            return
+        try:
+            with open(LEARN_FILE) as f:
+                data = json.load(f)
+            self.params       = data.get("params", self.params)
+            self.trades       = data.get("trades", [])
+            self.symbol_stats = data.get("symbol_stats", self.symbol_stats)
+            log(f"LEARN  Loaded {len(self.trades)} trades | "
+                f"RSI<{self.params['RSI_BUY']}  BB<{self.params['BB_ENTRY']:.2f}  "
+                f"MACD>{self.params['MACD_MIN']:.4f}", "WARN")
+        except Exception as e:
+            log(f"LEARN  Could not load: {e}", "WARN")
+
+    # ── Record a completed trade ──────────────────────────────────
+    def record(self, symbol, entry_rsi, entry_bb, entry_macd,
+               entry_trend_gap, exit_reason, pnl_pct):
+        win = pnl_pct > 0
+        self.trades.append({
+            "time":            datetime.now().isoformat(),
+            "symbol":          symbol,
+            "entry_rsi":       round(entry_rsi, 2),
+            "entry_bb":        round(entry_bb, 3),
+            "entry_macd":      round(entry_macd, 5),
+            "entry_trend_gap": round(entry_trend_gap, 4),
+            "exit_reason":     exit_reason,
+            "pnl_pct":         round(pnl_pct, 4),
+            "win":             win,
+        })
+        # Symbol stats
+        if symbol in self.symbol_stats:
+            if win: self.symbol_stats[symbol]["wins"]   += 1
+            else:   self.symbol_stats[symbol]["losses"] += 1
+
+        self._save()
+
+        if len(self.trades) % LEARN_EVERY == 0:
+            self._adapt()
+
+    # ── Core adaptation logic ─────────────────────────────────────
+    def _adapt(self):
+        recent = self.trades[-30:]   # analyse last 30 trades
+        if len(recent) < LEARN_EVERY:
+            return
+
+        wins   = [t for t in recent if t["win"]]
+        losses = [t for t in recent if not t["win"]]
+        wr     = len(wins) / len(recent)
+        changes = []
+
+        # ── RSI adaptation ───────────────────────────────
+        if losses:
+            avg_loss_rsi = sum(t["entry_rsi"] for t in losses) / len(losses)
+            avg_win_rsi  = sum(t["entry_rsi"] for t in wins)   / len(wins) if wins else 50
+            if avg_loss_rsi > avg_win_rsi + 3:
+                # losses tend to happen at higher RSI — tighten
+                new = self._clamp("RSI_BUY", self.params["RSI_BUY"] - 2)
+                if new != self.params["RSI_BUY"]:
+                    changes.append(f"RSI {self.params['RSI_BUY']}→{new} (loss avg RSI={avg_loss_rsi:.1f})")
+                    self.params["RSI_BUY"] = new
+
+        if wr > 0.65 and len(recent) >= 10:
+            # doing well — relax RSI slightly to catch more trades
+            new = self._clamp("RSI_BUY", self.params["RSI_BUY"] + 1)
+            if new != self.params["RSI_BUY"]:
+                changes.append(f"RSI {self.params['RSI_BUY']}→{new} (WR={wr:.0%} good)")
+                self.params["RSI_BUY"] = new
+
+        # ── BB adaptation ─────────────────────────────────
+        if losses:
+            avg_loss_bb = sum(t["entry_bb"] for t in losses) / len(losses)
+            avg_win_bb  = sum(t["entry_bb"] for t in wins)   / len(wins) if wins else 0.3
+            if avg_loss_bb > avg_win_bb + 0.07:
+                new = self._clamp("BB_ENTRY", round(self.params["BB_ENTRY"] - 0.05, 2))
+                if new != self.params["BB_ENTRY"]:
+                    changes.append(f"BB {self.params['BB_ENTRY']:.2f}→{new:.2f} (losses at higher BB)")
+                    self.params["BB_ENTRY"] = new
+
+        sl_rate = sum(1 for t in recent if t["exit_reason"] == "stop_loss") / len(recent)
+        if sl_rate > 0.40:
+            # too many stop losses — tighten both BB and RSI
+            new_bb  = self._clamp("BB_ENTRY", round(self.params["BB_ENTRY"] - 0.05, 2))
+            new_rsi = self._clamp("RSI_BUY",  self.params["RSI_BUY"] - 2)
+            changes.append(f"SL rate {sl_rate:.0%} too high — BB→{new_bb:.2f} RSI→{new_rsi}")
+            self.params["BB_ENTRY"] = new_bb
+            self.params["RSI_BUY"]  = new_rsi
+
+        # ── MACD minimum strength ─────────────────────────
+        if losses:
+            avg_loss_macd = sum(t["entry_macd"] for t in losses) / len(losses)
+            if avg_loss_macd < 0.001:
+                new = self._clamp("MACD_MIN", round(self.params["MACD_MIN"] + 0.0002, 4))
+                if new != self.params["MACD_MIN"]:
+                    changes.append(f"MACD_MIN →{new:.4f} (weak MACD entries losing)")
+                    self.params["MACD_MIN"] = new
+
+        self._save()
+
+        if changes:
+            log("─" * 70)
+            log(f"LEARN  Analysed {len(recent)} trades | WR={wr:.0%} | Adjustments:", "WARN")
+            for c in changes:
+                log(f"LEARN    • {c}", "WARN")
+            log("─" * 70)
+        else:
+            log(f"LEARN  WR={wr:.0%} over {len(recent)} trades — parameters stable", "WARN")
+
+    # ── Helpers ───────────────────────────────────────────────────
+    def _clamp(self, key, value):
+        lo, hi = self.LIMITS[key]
+        return max(lo, min(hi, value))
+
+    def is_symbol_banned(self, symbol):
+        """Skip a symbol if it has lost 5+ more times than it has won recently."""
+        s = self.symbol_stats.get(symbol, {})
+        w, l = s.get("wins", 0), s.get("losses", 0)
+        return l - w >= 5
+
+    def summary(self):
+        if not self.trades:
+            return "No trades learned yet"
+        recent = self.trades[-20:]
+        wr  = sum(1 for t in recent if t["win"]) / len(recent)
+        avg = sum(t["pnl_pct"] for t in recent) / len(recent)
+        return (f"Last {len(recent)} trades: WR={wr:.0%}  AvgPnL={avg:+.2f}%  "
+                f"| Learned: RSI<{self.params['RSI_BUY']}  "
+                f"BB<{self.params['BB_ENTRY']:.2f}  "
+                f"MACD>{self.params['MACD_MIN']:.4f}")
+
+
+# ================================================================
 #  MAIN LOOP
 # ================================================================
 def run_bot():
     init_trade_log()
+    learner = LearningEngine()
 
     log("=" * 70)
     log("  DUAL-TIMEFRAME BOLLINGER BAND SCALP BOT — Bybit TESTNET")
@@ -364,6 +539,11 @@ def run_bot():
     bb_mid_at_entry = {s: 0.0 for s in SYMBOLS}
     sl_prices       = {s: 0.0 for s in SYMBOLS}
     tp_prices       = {s: 0.0 for s in SYMBOLS}
+    # Learning — entry conditions recorded at buy time
+    entry_rsi       = {s: 0.0 for s in SYMBOLS}
+    entry_bb        = {s: 0.0 for s in SYMBOLS}
+    entry_macd      = {s: 0.0 for s in SYMBOLS}
+    entry_trend_gap = {s: 0.0 for s in SYMBOLS}
 
     trade_count = 0
     win_count   = 0
@@ -409,10 +589,16 @@ def run_bot():
             wr = int(win_count / trade_count * 100) if trade_count else 0
             log(f"Balance: ${usdt_bal:.2f}  |  Open: {open_positions}/{MAX_POSITIONS}  |  "
                 f"Trades: {trade_count}  |  Win: {wr}%  |  PnL: {'+'if total_pnl>=0 else ''}${total_pnl:.2f}")
+            log(f"LEARN  {learner.summary()}", "WARN")
             log("─" * 70)
 
             for symbol in SYMBOLS:
                 try:
+                    # Skip symbols the learner has flagged as consistently losing
+                    if learner.is_symbol_banned(symbol):
+                        log(f"  {symbol:<10} SKIPPED by learner (too many losses)", "WARN")
+                        continue
+
                     df = add_15m_indicators(get_candles(symbol, INTERVAL_5M))
 
                     # Need at least 2 rows for prev/last comparisons + enough for indicators
@@ -465,16 +651,21 @@ def run_bot():
                     bb_pct_val  = safe_float(last["bb_pct"])
 
                     # ── Compact status (2 lines per pair) ─────────
+                    # Use learned params (override config defaults)
+                    L_RSI  = learner.params["RSI_BUY"]
+                    L_BB   = learner.params["BB_ENTRY"]
+                    L_MACD = learner.params["MACD_MIN"]
+
                     c1_ok = trend_ok
-                    c2_ok = bb_pct_val < BB_ENTRY
-                    c3_ok = last['rsi'] < RSI_BUY
-                    c4_ok = macd_hist > 0
+                    c2_ok = bb_pct_val < L_BB
+                    c3_ok = last['rsi'] < L_RSI
+                    c4_ok = macd_hist > L_MACD
                     all_ok = c1_ok and c2_ok and c3_ok and c4_ok
 
                     t = "✓ Trend"  if c1_ok else f"✗ Trend(EMA20={ema_f:.2f} < EMA50={ema_s:.2f})"
-                    b = "✓ BB"    if c2_ok else f"✗ BB({bb_pct_val:.2f} need <{BB_ENTRY})"
-                    r = "✓ RSI"   if c3_ok else f"✗ RSI({last['rsi']:.1f} need <{RSI_BUY})"
-                    m = "✓ MACD"  if c4_ok else f"✗ MACD({macd_sign}{macd_hist:.4f} need >0)"
+                    b = "✓ BB"    if c2_ok else f"✗ BB({bb_pct_val:.2f} need <{L_BB})"
+                    r = "✓ RSI"   if c3_ok else f"✗ RSI({last['rsi']:.1f} need <{L_RSI})"
+                    m = "✓ MACD"  if c4_ok else f"✗ MACD({macd_sign}{macd_hist:.4f} need >{L_MACD:.4f})"
 
                     state = "IN TRADE" if in_pos else ("** BUY **" if all_ok else "waiting")
                     log(f"  {symbol:<10} ${price:>12,.4f}  RSI={last['rsi']:4.1f}  BB={bb_pct_val:.2f}  MACD={macd_sign}{macd_hist:.4f}  [{state}]")
@@ -494,7 +685,8 @@ def run_bot():
                         def close_trade(reason):
                             nonlocal trade_count, win_count, total_pnl, daily_pnl
                             if place_sell(symbol, qty, reason=reason):
-                                pnl = (price - ep) * qty
+                                pnl     = (price - ep) * qty
+                                pnl_pct_val = (price - ep) / ep if ep > 0 else 0
                                 total_pnl += pnl
                                 daily_pnl += pnl
                                 trade_count += 1
@@ -502,8 +694,19 @@ def run_bot():
                                 sign = "+" if pnl >= 0 else ""
                                 log(f"    {reason.upper()} | P&L: {sign}${pnl:.2f} ({pnl_pct*100:.1f}%)", "SELL")
                                 log_trade(symbol, "SELL", price, entry_usdt[symbol], ep, pnl, reason)
+                                # Feed learning engine
+                                learner.record(
+                                    symbol          = symbol,
+                                    entry_rsi       = entry_rsi[symbol],
+                                    entry_bb        = entry_bb[symbol],
+                                    entry_macd      = entry_macd[symbol],
+                                    entry_trend_gap = entry_trend_gap[symbol],
+                                    exit_reason     = reason,
+                                    pnl_pct         = pnl_pct_val * 100,
+                                )
                                 entry_prices[symbol] = highest_price[symbol] = entry_usdt[symbol] = 0.0
                                 bb_mid_at_entry[symbol] = sl_prices[symbol] = tp_prices[symbol] = 0.0
+                                entry_rsi[symbol] = entry_bb[symbol] = entry_macd[symbol] = entry_trend_gap[symbol] = 0.0
                                 save_state(entry_prices, highest_price, entry_usdt,
                                            bb_mid_at_entry, sl_prices, tp_prices,
                                            trade_count, win_count, total_pnl)
@@ -534,7 +737,7 @@ def run_bot():
                         signal_ok, reasons = buy_signal(df, trend_ok)
                         if signal_ok:
                             size = calc_position_size(usdt_bal)
-                            if size < MIN_TRADE_USDC:
+                            if size < MIN_TRADE_USDT:
                                 log(f"    Skipping: size ${size:.2f} below minimum", "WARN")
                             else:
                                 sl = price * (1 - STOP_LOSS_PCT)
@@ -548,6 +751,11 @@ def run_bot():
                                     bb_mid_at_entry[symbol] = safe_float(last["bb_mid"])
                                     sl_prices[symbol]       = sl
                                     tp_prices[symbol]       = tp
+                                    # Record entry conditions for learning
+                                    entry_rsi[symbol]       = last["rsi"]
+                                    entry_bb[symbol]        = bb_pct_val
+                                    entry_macd[symbol]      = macd_hist
+                                    entry_trend_gap[symbol] = ema_f - ema_s
                                     open_positions         += 1
                                     usdt_bal               -= size
                                     log_trade(symbol, "BUY", price, size, price, 0, "signal")
