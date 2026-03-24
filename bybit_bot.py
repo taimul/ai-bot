@@ -2,18 +2,24 @@
 ================================================================
   PROFESSIONAL MULTI-PAIR CRYPTO TRADING BOT
   Platform  : Bybit TESTNET (Spot)
-  Strategy  : RSI + MACD + EMA Trend Filter
-  Features  :
-    - Multi-indicator entry confirmation
-    - Risk-based position sizing (% of account)
-    - Hard Stop Loss + Take Profit
-    - Trailing Stop Loss
-    - Max concurrent positions cap
-    - Daily loss circuit breaker
-    - Volume confirmation filter
+
+  STRATEGY  : Dual-Timeframe Bollinger Band Mean Reversion
+  ─────────────────────────────────────────────────────────
+  TREND (1H):  EMA20 > EMA50 → confirmed uptrend
+  ENTRY (15m): Price touches lower BB  +  RSI < 50
+               + MACD histogram turning positive
+  EXIT  (15m): Price reaches BB middle band  OR
+               RSI > 62  OR  MACD turns bearish  OR
+               1H trend has reversed (EMA20 < EMA50)
+
+  RISK MANAGEMENT:
+    - Risk-based position sizing (2% of account per trade)
+    - Hard Stop Loss (3%)
+    - Take Profit at BB middle band (dynamic) or 6% max
+    - Trailing Stop (1.5%) to lock in profits
+    - Max 4 concurrent positions
+    - Daily loss circuit breaker (5%)
     - Trade log saved to CSV
-    - Per-symbol win/loss statistics
-    - Exponential backoff on errors
 ================================================================
 """
 
@@ -21,7 +27,7 @@ import time
 import csv
 import os
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime
 from pybit.unified_trading import HTTP
 
 # ================================================================
@@ -35,31 +41,34 @@ SYMBOLS = [
     "DOGEUSDT", "BNBUSDT", "AVAXUSDT", "ADAUSDT",
 ]
 
-INTERVAL = "15"          # 15-minute candles
+INTERVAL_15M = "15"    # Entry timeframe
+INTERVAL_1H  = "60"    # Trend timeframe
 
 # -- Risk Management --
-RISK_PCT         = 0.02  # Risk 2% of account balance per trade
-STOP_LOSS_PCT    = 0.03  # Hard stop loss: exit if price falls 3% from entry
-TAKE_PROFIT_PCT  = 0.06  # Take profit: exit if price rises 6% from entry (2:1 R:R)
-TRAIL_STOP_PCT   = 0.015 # Trailing stop: sell if price drops 1.5% from highest since entry
-MAX_POSITIONS    = 4     # Maximum open trades at once
-DAILY_LOSS_LIMIT = 0.05  # Circuit breaker: stop trading if daily loss > 5% of starting balance
-MIN_TRADE_USDT   = 5     # Minimum order size in USDT
+RISK_PCT         = 0.02   # 2% of balance risked per trade
+STOP_LOSS_PCT    = 0.03   # Hard stop: -3% from entry
+TAKE_PROFIT_PCT  = 0.06   # Max hard TP: +6% (BB mid usually hit first)
+TRAIL_STOP_PCT   = 0.015  # Trailing stop activates after +1% gain
+MAX_POSITIONS    = 4      # Max concurrent open trades
+DAILY_LOSS_LIMIT = 0.05   # Pause 1h if daily loss exceeds 5% of balance
+MIN_TRADE_USDT   = 5      # Minimum order size
 
-# -- Indicators --
-RSI_PERIOD   = 14
-RSI_BUY      = 45        # Buy zone: RSI below this
-RSI_SELL     = 60        # Sell zone: RSI above this
-EMA_TREND    = 200       # Macro trend filter: only buy above this EMA
-MA_FAST      = 9
-MA_SLOW      = 21
-MACD_FAST    = 12
-MACD_SLOW    = 26
-MACD_SIG     = 9
-VOL_MULT     = 1.2       # Volume must be 1.2x the 20-bar average to confirm entry
+# -- Indicator Settings --
+RSI_PERIOD  = 14
+RSI_BUY     = 50          # Entry: RSI below this (dip in uptrend)
+RSI_SELL    = 62          # Exit: RSI above this (mean reversion complete)
+BB_PERIOD   = 20          # Bollinger Band period
+BB_STD      = 2.0         # Bollinger Band standard deviation
+BB_ENTRY    = 0.20        # Enter when price is in bottom 20% of BB range
+BB_EXIT     = 0.55        # Exit when price reaches 55% of BB range (near midline)
+MACD_FAST   = 12
+MACD_SLOW   = 26
+MACD_SIG    = 9
+EMA_1H_FAST = 20          # 1H fast EMA for trend
+EMA_1H_SLOW = 50          # 1H slow EMA for trend
 
-SLEEP_SEC    = 60
-TRADE_LOG    = "trades.csv"
+SLEEP_SEC   = 60
+TRADE_LOG   = "trades.csv"
 # ================================================================
 
 session = HTTP(testnet=True, api_key=API_KEY, api_secret=API_SECRET)
@@ -68,8 +77,8 @@ session = HTTP(testnet=True, api_key=API_KEY, api_secret=API_SECRET)
 #  LOGGING
 # ================================================================
 def log(msg, level="INFO"):
-    prefix = {"INFO": "   ", "BUY": ">>", "SELL": "<<", "WARN": "!!", "ERR": "XX"}.get(level, "  ")
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {prefix} {msg}")
+    icons = {"INFO": "   ", "BUY": ">>", "SELL": "<<", "WARN": "!!", "ERR": "XX"}
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {icons.get(level,'  ')} {msg}")
 
 def init_trade_log():
     if not os.path.exists(TRADE_LOG):
@@ -80,7 +89,7 @@ def init_trade_log():
             ])
 
 def log_trade(symbol, side, price, qty_usdt, entry_price=0, pnl=0, reason=""):
-    pnl_pct = (pnl / (entry_price * qty_usdt / price)) * 100 if entry_price > 0 and price > 0 else 0
+    pnl_pct = (pnl / qty_usdt * 100) if qty_usdt > 0 else 0
     with open(TRADE_LOG, "a", newline="") as f:
         csv.writer(f).writerow([
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -94,12 +103,12 @@ def log_trade(symbol, side, price, qty_usdt, entry_price=0, pnl=0, reason=""):
 def safe_float(val, default=0.0):
     try:
         v = float(val)
-        return v if v == v else default  # NaN check
+        return v if v == v else default
     except (ValueError, TypeError):
         return default
 
-def get_candles(symbol, limit=250):
-    resp = session.get_kline(category="spot", symbol=symbol, interval=INTERVAL, limit=limit)
+def get_candles(symbol, interval, limit=120):
+    resp = session.get_kline(category="spot", symbol=symbol, interval=interval, limit=limit)
     raw  = resp["result"]["list"]
     df   = pd.DataFrame(raw, columns=["timestamp","open","high","low","close","volume","turnover"])
     df   = df[::-1].reset_index(drop=True)
@@ -107,7 +116,18 @@ def get_candles(symbol, limit=250):
         df[col] = df[col].astype(float)
     return df
 
-def add_indicators(df):
+def get_1h_trend(symbol):
+    """
+    Dual-Timeframe Trend Check (1H chart):
+    Returns True if EMA20 > EMA50 (bullish) on the 1-hour timeframe.
+    """
+    df = get_candles(symbol, INTERVAL_1H, limit=60)
+    df["ema_fast"] = df["close"].ewm(span=EMA_1H_FAST, adjust=False).mean()
+    df["ema_slow"] = df["close"].ewm(span=EMA_1H_SLOW, adjust=False).mean()
+    last = df.iloc[-1]
+    return last["ema_fast"] > last["ema_slow"], last["ema_fast"], last["ema_slow"]
+
+def add_15m_indicators(df):
     close = df["close"]
     vol   = df["volume"]
 
@@ -117,21 +137,24 @@ def add_indicators(df):
     loss      = (-delta.clip(upper=0)).rolling(RSI_PERIOD).mean()
     df["rsi"] = 100 - (100 / (1 + gain / loss))
 
-    # Moving Averages
-    df["ma_fast"] = close.rolling(MA_FAST).mean()
-    df["ma_slow"] = close.rolling(MA_SLOW).mean()
-    df["ema200"]  = close.ewm(span=EMA_TREND, adjust=False).mean()
+    # Bollinger Bands
+    df["bb_mid"]   = close.rolling(BB_PERIOD).mean()
+    df["bb_std"]   = close.rolling(BB_PERIOD).std()
+    df["bb_upper"] = df["bb_mid"] + BB_STD * df["bb_std"]
+    df["bb_lower"] = df["bb_mid"] - BB_STD * df["bb_std"]
+    # BB %B: 0 = at lower band, 0.5 = at midline, 1 = at upper band
+    bb_range       = df["bb_upper"] - df["bb_lower"]
+    df["bb_pct"]   = (close - df["bb_lower"]) / bb_range.replace(0, float("nan"))
 
     # MACD
-    ema_fast      = close.ewm(span=MACD_FAST, adjust=False).mean()
-    ema_slow      = close.ewm(span=MACD_SLOW, adjust=False).mean()
-    df["macd"]    = ema_fast - ema_slow
-    df["macd_sig"]= df["macd"].ewm(span=MACD_SIG, adjust=False).mean()
+    ema_f          = close.ewm(span=MACD_FAST, adjust=False).mean()
+    ema_s          = close.ewm(span=MACD_SLOW, adjust=False).mean()
+    df["macd"]     = ema_f - ema_s
+    df["macd_sig"] = df["macd"].ewm(span=MACD_SIG, adjust=False).mean()
     df["macd_hist"]= df["macd"] - df["macd_sig"]
 
-    # Volume ratio vs 20-bar average
-    df["vol_avg"]   = vol.rolling(20).mean()
-    df["vol_ratio"] = vol / df["vol_avg"]
+    # Volume ratio
+    df["vol_ratio"] = vol / vol.rolling(20).mean()
 
     return df
 
@@ -163,14 +186,12 @@ def get_price(symbol):
     return safe_float(resp["result"]["list"][0]["lastPrice"])
 
 def calc_position_size(balance):
-    """Risk-based sizing: risk RISK_PCT of balance, SL is STOP_LOSS_PCT away."""
-    risk_amt = balance * RISK_PCT
-    size     = risk_amt / STOP_LOSS_PCT
-    max_size = balance * 0.20      # never more than 20% of balance in one trade
-    return round(min(size, max_size), 2)
+    """2% account risk per trade, capped at 20% of balance."""
+    size = (balance * RISK_PCT) / STOP_LOSS_PCT
+    return round(min(size, balance * 0.20), 2)
 
 # ================================================================
-#  ORDER EXECUTION
+#  ORDERS
 # ================================================================
 def place_buy(symbol, usdt_amount):
     try:
@@ -191,48 +212,55 @@ def place_sell(symbol, coin_qty, reason="signal"):
             category="spot", symbol=symbol, side="Sell",
             orderType="Market", qty=qty_str,
         )
-        log(f"SELL {symbol} | {qty_str} {symbol.replace('USDT','')} | Reason:{reason} | ID:{resp['result']['orderId']}", "SELL")
+        log(f"SELL {symbol} | {qty_str} {symbol.replace('USDT','')} | [{reason}] | ID:{resp['result']['orderId']}", "SELL")
         return True
     except Exception as e:
         log(f"SELL FAILED {symbol}: {e}", "ERR")
         return False
 
 # ================================================================
-#  SIGNALS
+#  SIGNALS  (Option 1 + Option 2 Combined)
 # ================================================================
-def buy_signal(df):
+def buy_signal(df, trend_ok):
     """
-    All 4 conditions must be true:
-      1. Price above EMA 200 (macro uptrend)
-      2. RSI in buy zone (< RSI_BUY)
-      3. MACD histogram turning positive (bullish momentum)
-      4. Volume spike confirms move
-    """
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    above_trend   = last["close"] > last["ema200"]
-    rsi_ok        = last["rsi"] < RSI_BUY
-    macd_bullish  = prev["macd_hist"] < 0 and last["macd_hist"] > 0   # MACD crossover
-    vol_confirmed = last["vol_ratio"] >= VOL_MULT
-
-    return above_trend and rsi_ok and macd_bullish and vol_confirmed
-
-def sell_signal(df):
-    """
-    Any of:
-      1. RSI overbought (> RSI_SELL)
-      2. MACD turns bearish (histogram crosses below 0)
-      3. MA fast drops below slow (trend break)
+    Entry requires ALL of:
+      [Option 2] 1H EMA20 > EMA50  → macro uptrend confirmed
+      [Option 1] BB %B < BB_ENTRY  → price at lower Bollinger Band (dip)
+      [Option 1] RSI < RSI_BUY     → oversold on 15m
+      [Option 1] MACD hist turning positive → momentum reversing up
     """
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
+    at_lower_bb   = safe_float(last["bb_pct"]) < BB_ENTRY
+    rsi_dip       = last["rsi"] < RSI_BUY
+    macd_turning  = prev["macd_hist"] < 0 and last["macd_hist"] > 0
+
+    reasons = []
+    if trend_ok:     reasons.append("1H-UP")
+    if at_lower_bb:  reasons.append(f"BB={last['bb_pct']:.2f}")
+    if rsi_dip:      reasons.append(f"RSI={last['rsi']:.1f}")
+    if macd_turning: reasons.append("MACD+")
+
+    return trend_ok and at_lower_bb and rsi_dip and macd_turning, reasons
+
+def sell_signal(df, trend_ok):
+    """
+    Exit on ANY of:
+      [Option 1] Price back at BB midline (mean reversion complete)
+      [Option 1] RSI > RSI_SELL (overbought)
+      [Option 1] MACD histogram turns negative
+      [Option 2] 1H trend reversed (EMA20 < EMA50)
+    """
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    at_midline    = safe_float(last["bb_pct"]) >= BB_EXIT
     rsi_high      = last["rsi"] > RSI_SELL
     macd_bearish  = prev["macd_hist"] > 0 and last["macd_hist"] < 0
-    ma_crossunder = prev["ma_fast"] >= prev["ma_slow"] and last["ma_fast"] < last["ma_slow"]
+    trend_broken  = not trend_ok
 
-    return rsi_high or macd_bearish or ma_crossunder
+    return at_midline or rsi_high or macd_bearish or trend_broken
 
 # ================================================================
 #  MAIN LOOP
@@ -240,156 +268,157 @@ def sell_signal(df):
 def run_bot():
     init_trade_log()
 
-    log("=" * 65)
-    log("  PROFESSIONAL MULTI-PAIR BOT — Bybit TESTNET")
-    log(f"  Pairs     : {', '.join(SYMBOLS)}")
-    log(f"  Interval  : {INTERVAL}m  |  Max Positions: {MAX_POSITIONS}")
-    log(f"  Risk/Trade: {RISK_PCT*100:.0f}%  |  SL: {STOP_LOSS_PCT*100:.0f}%  |  TP: {TAKE_PROFIT_PCT*100:.0f}%  |  Trail: {TRAIL_STOP_PCT*100:.1f}%")
-    log(f"  Daily Loss Limit: {DAILY_LOSS_LIMIT*100:.0f}% of starting balance")
-    log(f"  Entry: EMA{EMA_TREND} trend + RSI<{RSI_BUY} + MACD cross + Volume x{VOL_MULT}")
-    log("=" * 65)
+    log("=" * 68)
+    log("  DUAL-TIMEFRAME BOLLINGER BAND BOT — Bybit TESTNET")
+    log(f"  Pairs      : {', '.join(SYMBOLS)}")
+    log(f"  Timeframes : {INTERVAL_1H}m trend  +  {INTERVAL_15M}m entry")
+    log(f"  Trend      : 1H EMA{EMA_1H_FAST} > EMA{EMA_1H_SLOW}")
+    log(f"  Entry      : BB%B < {BB_ENTRY}  +  RSI < {RSI_BUY}  +  MACD turning +")
+    log(f"  Exit       : BB%B > {BB_EXIT}  OR  RSI > {RSI_SELL}  OR  MACD -  OR  Trend broken")
+    log(f"  Risk/Trade : {RISK_PCT*100:.0f}%  |  SL: {STOP_LOSS_PCT*100:.0f}%  |  TP: {TAKE_PROFIT_PCT*100:.0f}%  |  Trail: {TRAIL_STOP_PCT*100:.1f}%")
+    log(f"  Max Pos    : {MAX_POSITIONS}  |  Daily Loss Limit: {DAILY_LOSS_LIMIT*100:.0f}%")
+    log("=" * 68)
 
-    # Per-symbol state
     entry_prices  = {s: 0.0 for s in SYMBOLS}
-    highest_price = {s: 0.0 for s in SYMBOLS}   # for trailing stop
-    entry_usdt    = {s: 0.0 for s in SYMBOLS}    # usdt spent on entry
+    highest_price = {s: 0.0 for s in SYMBOLS}
+    entry_usdt    = {s: 0.0 for s in SYMBOLS}
+    bb_mid_at_entry = {s: 0.0 for s in SYMBOLS}   # dynamic TP target
 
-    # Session stats
-    trade_count   = 0
-    win_count     = 0
-    total_pnl     = 0.0
-    daily_pnl     = 0.0
-    starting_bal  = get_balance()
-    daily_limit   = starting_bal * DAILY_LOSS_LIMIT
-    error_streak  = 0
+    trade_count  = 0
+    win_count    = 0
+    total_pnl    = 0.0
+    daily_pnl    = 0.0
+    starting_bal = get_balance()
+    daily_limit  = starting_bal * DAILY_LOSS_LIMIT
+    error_streak = 0
 
-    log(f"  Starting balance: ${starting_bal:.2f} USDT", "INFO")
-    log("=" * 65)
+    log(f"  Starting balance: ${starting_bal:.2f} USDT")
+    log("=" * 68)
 
     while True:
         try:
-            usdt_bal     = get_balance()
+            usdt_bal       = get_balance()
             open_positions = sum(1 for s in SYMBOLS if get_position_qty(s) > 0.0001)
 
-            # ── Daily Loss Circuit Breaker ────────────────────────────
+            # ── Circuit Breaker ───────────────────────────────────────
             if daily_pnl <= -daily_limit:
-                log(f"CIRCUIT BREAKER: Daily loss ${daily_pnl:.2f} exceeded limit ${-daily_limit:.2f}. Pausing 1h.", "WARN")
+                log(f"CIRCUIT BREAKER: Daily loss ${daily_pnl:.2f} hit limit. Pausing 1 hour.", "WARN")
                 time.sleep(3600)
-                daily_pnl    = 0.0
-                daily_limit  = get_balance() * DAILY_LOSS_LIMIT
+                daily_pnl   = 0.0
+                daily_limit = get_balance() * DAILY_LOSS_LIMIT
                 continue
 
-            log(f"Balance: ${usdt_bal:.2f} USDT | Open: {open_positions}/{MAX_POSITIONS} | "
-                f"Session PnL: {'+'if total_pnl>=0 else ''}${total_pnl:.2f} | "
-                f"Day PnL: {'+'if daily_pnl>=0 else ''}${daily_pnl:.2f}")
-            log("─" * 65)
+            wr = int(win_count / trade_count * 100) if trade_count else 0
+            log(f"Balance: ${usdt_bal:.2f}  |  Open: {open_positions}/{MAX_POSITIONS}  |  "
+                f"Trades: {trade_count}  |  Win: {wr}%  |  PnL: {'+'if total_pnl>=0 else ''}${total_pnl:.2f}")
+            log("─" * 68)
 
             for symbol in SYMBOLS:
                 try:
-                    df       = add_indicators(get_candles(symbol))
-                    price    = get_price(symbol)
-                    coin_qty = get_position_qty(symbol)
-                    in_pos   = coin_qty > 0.0001
-                    last     = df.iloc[-1]
+                    # Fetch both timeframes
+                    trend_ok, ema_f, ema_s = get_1h_trend(symbol)
+                    df    = add_15m_indicators(get_candles(symbol, INTERVAL_15M))
+                    price = get_price(symbol)
+                    qty   = get_position_qty(symbol)
+                    in_pos = qty > 0.0001
+                    last   = df.iloc[-1]
 
-                    # Update trailing stop tracker
                     if in_pos and price > highest_price[symbol]:
                         highest_price[symbol] = price
 
                     # Status line
-                    trend_str = "^" if last["close"] > last["ema200"] else "v"
-                    macd_str  = "+" if last["macd_hist"] > 0 else "-"
+                    trend_icon = "▲" if trend_ok else "▼"
+                    macd_icon  = "+" if last["macd_hist"] > 0 else "-"
+                    bb_pct_val = safe_float(last["bb_pct"])
                     log(f"  {symbol:<12} ${price:<12,.4f} "
                         f"RSI={last['rsi']:5.1f}  "
-                        f"MACD={macd_str}  "
-                        f"Trend={trend_str}  "
-                        f"Vol={last['vol_ratio']:.1f}x  "
+                        f"BB={bb_pct_val:.2f}  "
+                        f"MACD={macd_icon}  "
+                        f"1H={trend_icon}  "
                         f"[{'IN TRADE' if in_pos else 'watching'}]")
 
-                    # ── MANAGE OPEN POSITION ─────────────────────────
+                    # ── MANAGE OPEN POSITION ──────────────────────────
                     if in_pos:
-                        ep         = entry_prices[symbol]
-                        high       = highest_price[symbol]
-                        pnl_pct    = (price - ep) / ep if ep > 0 else 0
+                        ep      = entry_prices[symbol]
+                        high    = highest_price[symbol]
+                        bb_tp   = bb_mid_at_entry[symbol]
+                        pnl_pct = (price - ep) / ep if ep > 0 else 0
 
-                        # Hard Stop Loss
+                        def close_trade(reason):
+                            nonlocal trade_count, win_count, total_pnl, daily_pnl
+                            if place_sell(symbol, qty, reason=reason):
+                                pnl = (price - ep) * qty
+                                total_pnl += pnl
+                                daily_pnl += pnl
+                                trade_count += 1
+                                if pnl > 0:
+                                    win_count += 1
+                                sign = "+" if pnl >= 0 else ""
+                                log(f"    {reason.upper()} | P&L: {sign}${pnl:.2f} ({pnl_pct*100:.1f}%)", "SELL")
+                                log_trade(symbol, "SELL", price, entry_usdt[symbol], ep, pnl, reason)
+                                entry_prices[symbol] = highest_price[symbol] = entry_usdt[symbol] = bb_mid_at_entry[symbol] = 0.0
+
+                        # Priority 1: Hard Stop Loss
                         if pnl_pct <= -STOP_LOSS_PCT:
-                            log(f"    STOP LOSS hit {pnl_pct*100:.1f}%  @ ${price:.4f}", "WARN")
-                            if place_sell(symbol, coin_qty, reason="stop_loss"):
-                                pnl = (price - ep) * coin_qty
-                                total_pnl += pnl; daily_pnl += pnl; trade_count += 1
-                                log_trade(symbol, "SELL", price, entry_usdt[symbol], ep, pnl, "stop_loss")
-                                entry_prices[symbol] = highest_price[symbol] = entry_usdt[symbol] = 0.0
-                            continue
+                            log(f"    STOP LOSS {pnl_pct*100:.1f}% @ ${price:.4f}", "WARN")
+                            close_trade("stop_loss")
 
-                        # Take Profit
-                        if pnl_pct >= TAKE_PROFIT_PCT:
-                            log(f"    TAKE PROFIT hit +{pnl_pct*100:.1f}% @ ${price:.4f}", "SELL")
-                            if place_sell(symbol, coin_qty, reason="take_profit"):
-                                pnl = (price - ep) * coin_qty
-                                total_pnl += pnl; daily_pnl += pnl; trade_count += 1; win_count += 1
-                                log_trade(symbol, "SELL", price, entry_usdt[symbol], ep, pnl, "take_profit")
-                                entry_prices[symbol] = highest_price[symbol] = entry_usdt[symbol] = 0.0
-                            continue
+                        # Priority 2: Hard Take Profit cap
+                        elif pnl_pct >= TAKE_PROFIT_PCT:
+                            log(f"    TAKE PROFIT +{pnl_pct*100:.1f}% @ ${price:.4f}", "SELL")
+                            close_trade("take_profit")
 
-                        # Trailing Stop (only active after 1% gain)
-                        trail_drop = (high - price) / high if high > 0 else 0
-                        if pnl_pct > 0.01 and trail_drop >= TRAIL_STOP_PCT:
-                            log(f"    TRAILING STOP hit (high=${high:.4f}, now=${price:.4f}, drop={trail_drop*100:.1f}%)", "WARN")
-                            if place_sell(symbol, coin_qty, reason="trail_stop"):
-                                pnl = (price - ep) * coin_qty
-                                total_pnl += pnl; daily_pnl += pnl; trade_count += 1
-                                if pnl > 0: win_count += 1
-                                log_trade(symbol, "SELL", price, entry_usdt[symbol], ep, pnl, "trail_stop")
-                                entry_prices[symbol] = highest_price[symbol] = entry_usdt[symbol] = 0.0
-                            continue
+                        # Priority 3: Trailing Stop (after +1% gain)
+                        elif pnl_pct > 0.01 and (high - price) / high >= TRAIL_STOP_PCT:
+                            log(f"    TRAIL STOP | High=${high:.4f} → Now=${price:.4f}", "WARN")
+                            close_trade("trail_stop")
 
-                        # Indicator Sell Signal
-                        if sell_signal(df):
-                            log(f"    SELL SIGNAL RSI={last['rsi']:.1f}", "SELL")
-                            if place_sell(symbol, coin_qty, reason="signal"):
-                                pnl = (price - ep) * coin_qty
-                                total_pnl += pnl; daily_pnl += pnl; trade_count += 1
-                                if pnl > 0: win_count += 1
-                                log_trade(symbol, "SELL", price, entry_usdt[symbol], ep, pnl, "signal")
-                                entry_prices[symbol] = highest_price[symbol] = entry_usdt[symbol] = 0.0
+                        # Priority 4: BB midline hit (mean reversion target)
+                        elif bb_tp > 0 and price >= bb_tp:
+                            log(f"    BB MIDLINE TARGET hit @ ${price:.4f} (target=${bb_tp:.4f})", "SELL")
+                            close_trade("bb_midline")
 
-                    # ── LOOK FOR ENTRY ───────────────────────────────
-                    elif open_positions < MAX_POSITIONS and buy_signal(df):
-                        size = calc_position_size(usdt_bal)
-                        if size < MIN_TRADE_USDT:
-                            log(f"    Skipping: position size ${size:.2f} below minimum", "WARN")
-                        else:
-                            log(f"    BUY SIGNAL | RSI={last['rsi']:.1f} MACD+ Vol={last['vol_ratio']:.1f}x | Size=${size:.2f}", "BUY")
-                            if place_buy(symbol, size):
-                                entry_prices[symbol]  = price
-                                highest_price[symbol] = price
-                                entry_usdt[symbol]    = size
-                                open_positions       += 1
-                                usdt_bal             -= size
-                                log_trade(symbol, "BUY", price, size, price, 0, "signal")
+                        # Priority 5: Indicator sell signal
+                        elif sell_signal(df, trend_ok):
+                            log(f"    SELL SIGNAL | RSI={last['rsi']:.1f} BB={bb_pct_val:.2f} Trend={'OK' if trend_ok else 'BROKEN'}", "SELL")
+                            close_trade("signal")
+
+                    # ── LOOK FOR ENTRY ────────────────────────────────
+                    elif open_positions < MAX_POSITIONS:
+                        signal_ok, reasons = buy_signal(df, trend_ok)
+                        if signal_ok:
+                            size = calc_position_size(usdt_bal)
+                            if size < MIN_TRADE_USDT:
+                                log(f"    Skipping: size ${size:.2f} below minimum", "WARN")
+                            else:
+                                log(f"    BUY SIGNAL [{' | '.join(reasons)}] | Size=${size:.2f}", "BUY")
+                                if place_buy(symbol, size):
+                                    entry_prices[symbol]    = price
+                                    highest_price[symbol]   = price
+                                    entry_usdt[symbol]      = size
+                                    bb_mid_at_entry[symbol] = safe_float(last["bb_mid"])
+                                    open_positions         += 1
+                                    usdt_bal               -= size
+                                    log_trade(symbol, "BUY", price, size, price, 0, "signal")
+                                    log(f"    Entry=${price:.4f} | SL=${price*(1-STOP_LOSS_PCT):.4f} | "
+                                        f"TP target=${safe_float(last['bb_mid']):.4f} | "
+                                        f"Max TP=${price*(1+TAKE_PROFIT_PCT):.4f}")
 
                 except Exception as e:
                     log(f"  {symbol}: {e}", "ERR")
                     continue
 
-            # Stats summary
-            wr = int(win_count / trade_count * 100) if trade_count else 0
-            log("─" * 65)
-            log(f"  Trades: {trade_count} | Wins: {win_count} ({wr}%) | "
-                f"Session PnL: {'+'if total_pnl>=0 else ''}${total_pnl:.2f}")
-            log("─" * 65)
-
-            error_streak = 0  # reset on successful cycle
+            log("─" * 68)
+            error_streak = 0
 
         except KeyboardInterrupt:
-            log("\nBot stopped by user.")
+            log("\nBot stopped.")
             log(f"Final: Trades={trade_count} | Wins={win_count} | PnL=${total_pnl:.2f}")
             break
         except Exception as e:
             error_streak += 1
-            wait = min(30 * (2 ** error_streak), 300)  # exponential backoff, max 5 min
-            log(f"Error (streak={error_streak}): {e} — retrying in {wait}s", "ERR")
+            wait = min(30 * (2 ** error_streak), 300)
+            log(f"Error (streak={error_streak}): {e} — retry in {wait}s", "ERR")
             time.sleep(wait)
             continue
 
