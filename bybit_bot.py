@@ -233,8 +233,11 @@ def calc_position_size(balance):
     size = (balance * RISK_PCT) / STOP_LOSS_PCT
     return round(min(size, balance * 0.20), 2)
 
-def round_price(price, decimals=4):
-    return round(price, decimals)
+def round_price(price):
+    """Round price to correct decimal places based on price magnitude."""
+    if price >= 100:   return round(price, 2)   # SOL $93, ETH $2169, BTC $89k
+    if price >= 1:     return round(price, 4)   # XRP $1.56, TRX $0.30
+    return             round(price, 6)          # ADA $0.265, DOGE $0.10
 
 # ================================================================
 #  ORDERS  — SL/TP attached to buy order (lives on Bybit servers)
