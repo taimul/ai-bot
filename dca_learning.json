@@ -164,6 +164,17 @@
       "hour": 10,
       "entry_rsi": 50.47,
       "entry_bb": 0.425
+    },
+    {
+      "time": "2026-03-25T11:00:47.985609",
+      "symbol": "ADAUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "trail_stop",
+      "pnl_pct": 0.174,
+      "win": true,
+      "hour": 11,
+      "entry_rsi": 52.24,
+      "entry_bb": 0.426
     }
   ],
   "symbol_stats": {
@@ -183,9 +194,9 @@
       "consec_losses": 0
     },
     "ADAUSDT": {
-      "wins": 4,
+      "wins": 5,
       "losses": 1,
-      "consec_losses": 1
+      "consec_losses": 0
     },
     "TRXUSDT": {
       "wins": 0,

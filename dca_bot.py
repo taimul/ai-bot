@@ -82,6 +82,10 @@ DAILY_LOSS_LIMIT = 0.05    # pause for 1h if daily loss hits 5%
 MIN_TRADE_USDT   = 5       # minimum coin value to consider a real position
 TAKER_FEE        = 0.001   # Bybit spot taker fee (0.1% per side, 0.2% round-trip)
 
+# -- Volatility Filter --
+ATR_PERIOD   = 14     # candles for ATR average
+ATR_MAX_PCT  = 0.020  # block entry if 5m ATR > 2.0% of price (high volatility)
+
 # -- Indicators (same as scalp bot for consistency) --
 RSI_PERIOD   = 14
 RSI_BUY      = 55    # entry RSI threshold
@@ -354,6 +358,16 @@ def add_indicators(df):
     df["macd_sig"]  = df["macd"].ewm(span=MACD_SIG, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_sig"]
 
+    # ATR — true range accounts for gaps between candles
+    prev_close      = close.shift(1)
+    tr              = pd.concat([
+                          df["high"] - df["low"],
+                          (df["high"] - prev_close).abs(),
+                          (df["low"]  - prev_close).abs(),
+                      ], axis=1).max(axis=1)
+    df["atr"]       = tr.rolling(ATR_PERIOD).mean()
+    df["atr_pct"]   = df["atr"] / close   # normalised: ATR as % of price
+
     return df
 
 
@@ -389,8 +403,14 @@ def calc_total_usdt(levels):
 #  SIGNALS
 # ================================================================
 def entry_signal(df, trend_ok, rsi_thresh=None, bb_thresh=None):
-    """Initial entry: same conditions as scalp bot."""
+    """Initial entry: ATR volatility check first, then trend/BB/RSI/MACD."""
     last = df.iloc[-1]
+
+    # ── 1. VOLATILITY FILTER (highest priority) ───────────────────────
+    atr_pct = safe_float(last.get("atr_pct", 0))
+    if atr_pct > ATR_MAX_PCT:
+        return False, [f"HIGH-VOL ATR={atr_pct*100:.2f}% (max {ATR_MAX_PCT*100:.1f}%)"]
+
     _rsi = rsi_thresh if rsi_thresh is not None else RSI_BUY
     _bb  = bb_thresh  if bb_thresh  is not None else BB_ENTRY
 
@@ -1153,6 +1173,9 @@ def run_bot():
                                 f"hour {datetime.now().hour:02d}:xx avoided", "WARN")
                         else:
                             signal_ok, reasons = entry_signal(df, trend_ok)
+                            if not signal_ok and reasons and \
+                                    reasons[0].startswith("HIGH-VOL"):
+                                log(f"  {symbol}: SKIP — {reasons[0]}", "WARN")
                             if signal_ok:
                                 # Ensure enough USDT for initial buy
                                 init_size = DCA_SIZES[0]

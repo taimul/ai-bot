@@ -64,6 +64,10 @@ MIN_TRADE_USDT   = 5       # Dust filter — ignore coin balances below $5
 MIN_ORDER_USDT   = 180     # Minimum order size per trade
 MAX_ORDER_USDT   = 200     # Maximum order size per trade
 
+# -- Volatility Filter --
+ATR_PERIOD   = 14     # candles for ATR average
+ATR_MAX_PCT  = 0.020  # block entry if 5m ATR > 2.0% of price (high volatility)
+
 # -- Indicators --
 RSI_PERIOD   = 14
 RSI_BUY      = 55     # Relaxed — catches more dips
@@ -295,8 +299,18 @@ def add_15m_indicators(df):
     ema_s          = close.ewm(span=MACD_SLOW, adjust=False).mean()
     df["macd"]     = ema_f - ema_s
     df["macd_sig"] = df["macd"].ewm(span=MACD_SIG, adjust=False).mean()
-    df["macd_hist"]= df["macd"] - df["macd_sig"]
+    df["macd_hist"] = df["macd"] - df["macd_sig"]
     df["vol_ratio"] = vol / vol.rolling(20).mean()
+
+    # ATR — true range accounts for gaps between candles
+    prev_close      = close.shift(1)
+    tr              = pd.concat([
+                          df["high"] - df["low"],
+                          (df["high"] - prev_close).abs(),
+                          (df["low"]  - prev_close).abs(),
+                      ], axis=1).max(axis=1)
+    df["atr"]       = tr.rolling(ATR_PERIOD).mean()
+    df["atr_pct"]   = df["atr"] / close   # normalised: ATR as % of price
 
     return df
 
@@ -418,13 +432,20 @@ def place_sell(symbol, coin_qty, reason="signal"):
 def buy_signal(df, trend_ok, rsi_thresh=None, bb_thresh=None, macd_min=0.0):
     """
     Entry on 5m when ALL true:
-      - 15m EMA20 > EMA50 (uptrend)
-      - Price in lower BB zone (bb_pct < bb_thresh)
-      - RSI < rsi_thresh (not overbought)
-      - MACD histogram > macd_min (bullish momentum)
+      0. ATR volatility check (highest priority — blocks all others if too high)
+      1. 15m EMA20 > EMA50 (uptrend)
+      2. Price in lower BB zone (bb_pct < bb_thresh)
+      3. RSI < rsi_thresh (not overbought)
+      4. MACD histogram > macd_min (bullish momentum)
     Thresholds default to config values but are overridden by learned params.
     """
     last = df.iloc[-1]
+
+    # ── 0. VOLATILITY FILTER (highest priority) ───────────────────────
+    atr_pct = safe_float(last.get("atr_pct", 0))
+    if atr_pct > ATR_MAX_PCT:
+        return False, [f"HIGH-VOL ATR={atr_pct*100:.2f}% (max {ATR_MAX_PCT*100:.1f}%)"]
+
     _rsi = rsi_thresh if rsi_thresh is not None else RSI_BUY
     _bb  = bb_thresh  if bb_thresh  is not None else BB_ENTRY
 
@@ -1160,6 +1181,9 @@ def run_bot():
                                 bb_thresh=L_BB,
                                 macd_min=L_MACD,
                             )
+                            if not signal_ok and reasons and \
+                                    reasons[0].startswith("HIGH-VOL"):
+                                log(f"  {symbol}: SKIP — {reasons[0]}", "WARN")
                             # Also apply trend gap filter
                             if signal_ok and trend_gap < L_GAP:
                                 log(f"    Skip: trend gap {trend_gap:.4f} < min {L_GAP:.4f}", "WARN")
