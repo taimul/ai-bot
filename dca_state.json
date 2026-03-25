@@ -1,42 +1,7 @@
 {
-  "saved_at": "2026-03-25T10:04:34.968196",
-  "trade_count": 5,
-  "win_count": 3,
-  "total_pnl": 1.783127999999997,
-  "positions": {
-    "ETHUSDT": {
-      "levels": [
-        {
-          "price": 2151.84,
-          "usdt": 60.0,
-          "coins": 0.027883113986169973
-        }
-      ],
-      "sl_price": 2044.248,
-      "highest_price": 2151.84,
-      "trail_sl": 0.0,
-      "bb_mid_at_entry": 2154.72,
-      "entry_rsi": 47.058823529411875,
-      "entry_bb": 0.39102752641152067,
-      "entry_macd": 0.6407204517992182,
-      "entry_trend_gap": 5.586169531208725
-    },
-    "SOLUSDT": {
-      "levels": [
-        {
-          "price": 90.0,
-          "usdt": 60.0,
-          "coins": 0.6666666666666666
-        }
-      ],
-      "sl_price": 85.5,
-      "highest_price": 90.0,
-      "trail_sl": 0.0,
-      "bb_mid_at_entry": 92.025,
-      "entry_rsi": 48.43367596671562,
-      "entry_bb": 0.25511965544114845,
-      "entry_macd": 0.12568766572446943,
-      "entry_trend_gap": 0.24193894042615227
-    }
-  }
+  "saved_at": "2026-03-25T10:07:09.734046",
+  "trade_count": 8,
+  "win_count": 5,
+  "total_pnl": 4.263561999999991,
+  "positions": {}
 }

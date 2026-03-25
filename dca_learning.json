@@ -54,6 +54,39 @@
       "hour": 10,
       "entry_rsi": 48.4,
       "entry_bb": 0.252
+    },
+    {
+      "time": "2026-03-25T10:05:37.078039",
+      "symbol": "ETHUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "bb_midline",
+      "pnl_pct": 0.3732,
+      "win": true,
+      "hour": 10,
+      "entry_rsi": 47.06,
+      "entry_bb": 0.391
+    },
+    {
+      "time": "2026-03-25T10:07:08.306509",
+      "symbol": "ETHUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "signal",
+      "pnl_pct": 0.0,
+      "win": false,
+      "hour": 10,
+      "entry_rsi": 43.75,
+      "entry_bb": 0.409
+    },
+    {
+      "time": "2026-03-25T10:07:09.733171",
+      "symbol": "SOLUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "trail_stop",
+      "pnl_pct": 3.8,
+      "win": true,
+      "hour": 10,
+      "entry_rsi": 48.43,
+      "entry_bb": 0.255
     }
   ],
   "symbol_stats": {
@@ -63,12 +96,12 @@
       "consec_losses": 0
     },
     "ETHUSDT": {
-      "wins": 1,
-      "losses": 1,
+      "wins": 2,
+      "losses": 2,
       "consec_losses": 1
     },
     "SOLUSDT": {
-      "wins": 1,
+      "wins": 2,
       "losses": 1,
       "consec_losses": 0
     },
