@@ -83,8 +83,9 @@ MIN_TRADE_USDT   = 5       # minimum coin value to consider a real position
 TAKER_FEE        = 0.001   # Bybit spot taker fee (0.1% per side, 0.2% round-trip)
 
 # -- Volatility Filter --
-ATR_PERIOD   = 14     # candles for ATR average
-ATR_MAX_PCT  = 0.020  # block entry if 5m ATR > 2.0% of price (high volatility)
+ATR_PERIOD    = 14   # candles for ATR calculation
+ATR_MA_PERIOD = 50   # candles for ATR baseline (what's "normal" for this symbol)
+ATR_RATIO_MAX = 1.5  # block entry if current ATR > 1.5x its own recent average
 
 # -- Indicators (same as scalp bot for consistency) --
 RSI_PERIOD   = 14
@@ -366,7 +367,8 @@ def add_indicators(df):
                           (df["low"]  - prev_close).abs(),
                       ], axis=1).max(axis=1)
     df["atr"]       = tr.rolling(ATR_PERIOD).mean()
-    df["atr_pct"]   = df["atr"] / close   # normalised: ATR as % of price
+    # Ratio vs its own baseline — self-calibrating across symbols and testnet/mainnet
+    df["atr_ratio"] = df["atr"] / df["atr"].rolling(ATR_MA_PERIOD).mean()
 
     return df
 
@@ -407,9 +409,9 @@ def entry_signal(df, trend_ok, rsi_thresh=None, bb_thresh=None):
     last = df.iloc[-1]
 
     # ── 1. VOLATILITY FILTER (highest priority) ───────────────────────
-    atr_pct = safe_float(last.get("atr_pct", 0))
-    if atr_pct > ATR_MAX_PCT:
-        return False, [f"HIGH-VOL ATR={atr_pct*100:.2f}% (max {ATR_MAX_PCT*100:.1f}%)"]
+    atr_ratio = safe_float(last.get("atr_ratio", 1.0))
+    if atr_ratio > ATR_RATIO_MAX:
+        return False, [f"HIGH-VOL ATR x{atr_ratio:.2f} (max {ATR_RATIO_MAX:.1f}x baseline)"]
 
     _rsi = rsi_thresh if rsi_thresh is not None else RSI_BUY
     _bb  = bb_thresh  if bb_thresh  is not None else BB_ENTRY
