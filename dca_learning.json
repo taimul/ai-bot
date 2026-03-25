@@ -87,6 +87,61 @@
       "hour": 10,
       "entry_rsi": 48.43,
       "entry_bb": 0.255
+    },
+    {
+      "time": "2026-03-25T10:11:47.815387",
+      "symbol": "SOLUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "trail_stop",
+      "pnl_pct": 2.9558,
+      "win": true,
+      "hour": 10,
+      "entry_rsi": 46.2,
+      "entry_bb": 0.291
+    },
+    {
+      "time": "2026-03-25T10:14:43.733506",
+      "symbol": "SOLUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "trail_stop",
+      "pnl_pct": 3.0658,
+      "win": true,
+      "hour": 10,
+      "entry_rsi": 52.89,
+      "entry_bb": 0.204
+    },
+    {
+      "time": "2026-03-25T10:16:03.507505",
+      "symbol": "ADAUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "bb_midline",
+      "pnl_pct": 1.8939,
+      "win": true,
+      "hour": 10,
+      "entry_rsi": 51.95,
+      "entry_bb": 0.398
+    },
+    {
+      "time": "2026-03-25T10:19:06.368420",
+      "symbol": "ADAUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "trail_stop",
+      "pnl_pct": 2.2814,
+      "win": true,
+      "hour": 10,
+      "entry_rsi": 51.28,
+      "entry_bb": 0.347
+    },
+    {
+      "time": "2026-03-25T10:29:40.402006",
+      "symbol": "ADAUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "trail_stop",
+      "pnl_pct": 0.1811,
+      "win": true,
+      "hour": 10,
+      "entry_rsi": 50.77,
+      "entry_bb": 0.256
     }
   ],
   "symbol_stats": {
@@ -101,12 +156,12 @@
       "consec_losses": 1
     },
     "SOLUSDT": {
-      "wins": 2,
+      "wins": 4,
       "losses": 1,
       "consec_losses": 0
     },
     "ADAUSDT": {
-      "wins": 1,
+      "wins": 4,
       "losses": 0,
       "consec_losses": 0
     },

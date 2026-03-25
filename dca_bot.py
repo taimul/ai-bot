@@ -75,6 +75,7 @@ PANIC_RSI        = 22      # RSI below this → immediate exit, no questions ask
 MAX_POSITIONS    = 2       # max simultaneous DCA positions
 DAILY_LOSS_LIMIT = 0.05    # pause for 1h if daily loss hits 5%
 MIN_TRADE_USDT   = 5       # minimum coin value to consider a real position
+TAKER_FEE        = 0.001   # Bybit spot taker fee (0.1% per side, 0.2% round-trip)
 
 # -- Indicators (same as scalp bot for consistency) --
 RSI_PERIOD   = 14
@@ -884,9 +885,12 @@ def run_bot():
                         avg_entry    = calc_avg_entry(dca_levels[symbol])
                         total_coins  = calc_total_coins(dca_levels[symbol])
                         total_usdt_i = calc_total_usdt(dca_levels[symbol])
-                        pnl_pct      = (price - avg_entry) / avg_entry \
+                        # Fee-adjusted P&L: buy paid avg*(1+fee), sell gets price*(1-fee)
+                        pnl_pct      = (price * (1 - TAKER_FEE) /
+                                        (avg_entry * (1 + TAKER_FEE)) - 1) \
                                        if avg_entry > 0 else 0.0
-                        pnl_usd      = (price - avg_entry) * total_coins
+                        pnl_usd      = (price * (1 - TAKER_FEE) -
+                                        avg_entry * (1 + TAKER_FEE)) * total_coins
                         pnl_sign     = "+" if pnl_usd >= 0 else ""
                         pnl_icon     = "▲" if pnl_usd >= 0 else "▼"
                         lv_count     = len(dca_levels[symbol])
@@ -961,8 +965,13 @@ def run_bot():
                             if place_sell(symbol, sell_qty, reason=reason):
                                 avg   = calc_avg_entry(dca_levels[symbol])
                                 tot_u = calc_total_usdt(dca_levels[symbol])
-                                pnl   = (price - avg) * sell_qty if avg > 0 else 0.0
-                                ppct  = (price - avg) / avg * 100 if avg > 0 else 0.0
+                                # Fee-adjusted: buy paid avg*(1+fee), sell nets price*(1-fee)
+                                pnl   = (price * (1 - TAKER_FEE) -
+                                         avg * (1 + TAKER_FEE)) * sell_qty \
+                                        if avg > 0 else 0.0
+                                ppct  = (price * (1 - TAKER_FEE) /
+                                         (avg * (1 + TAKER_FEE)) - 1) * 100 \
+                                        if avg > 0 else 0.0
                                 total_pnl   += pnl
                                 daily_pnl   += pnl
                                 trade_count += 1
@@ -1005,22 +1014,21 @@ def run_bot():
                                 f"@ ${price:.4f}", "SELL")
                             close_position(panic_reason)
 
-                        # ── 2. TRAILING STOP (active above TP) ────
-                        elif (avg_entry > 0 and
-                              price >= avg_entry * (1 + learner.tp_pct) and
-                              highest_price[symbol] > 0):
-                            new_trail = highest_price[symbol] * (1 - TRAIL_STOP_PCT)
-                            if trail_sl[symbol] == 0.0:
-                                # First time above TP — activate trailing stop
-                                trail_sl[symbol] = new_trail
-                                log(f"    Trailing stop activated @ "
-                                    f"${trail_sl[symbol]:.4f}", "INFO")
-                            elif new_trail > trail_sl[symbol]:
-                                trail_sl[symbol] = new_trail
-                                log(f"    Trail SL → ${trail_sl[symbol]:.4f}",
-                                    "INFO")
-                            # Check if trailing stop was hit
-                            if price <= trail_sl[symbol]:
+                        # ── 2. TRAILING STOP ──────────────────────────
+                        # Update: only raise the trail when price is above TP
+                        elif avg_entry > 0 and highest_price[symbol] > 0:
+                            if price >= avg_entry * (1 + learner.tp_pct):
+                                new_trail = highest_price[symbol] * (1 - TRAIL_STOP_PCT)
+                                if trail_sl[symbol] == 0.0:
+                                    trail_sl[symbol] = new_trail
+                                    log(f"    Trailing stop activated @ "
+                                        f"${trail_sl[symbol]:.4f}", "INFO")
+                                elif new_trail > trail_sl[symbol]:
+                                    trail_sl[symbol] = new_trail
+                                    log(f"    Trail SL → ${trail_sl[symbol]:.4f}",
+                                        "INFO")
+                            # Trigger: check ALWAYS once trail is set, regardless of TP
+                            if trail_sl[symbol] > 0 and price <= trail_sl[symbol]:
                                 log(f"    TRAIL STOP hit @ ${price:.4f} "
                                     f"(trail=${trail_sl[symbol]:.4f})", "SELL")
                                 close_position("trail_stop")
