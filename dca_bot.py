@@ -45,9 +45,15 @@ from pybit.unified_trading import HTTP
 # ================================================================
 #  CONFIG
 # ================================================================
-API_KEY    = "YndDHQr6Mpx2i3fElS"
-API_SECRET = "oGjioa9ZVih7rw1b4dBVMJJ2UkGQZ4LrF5cR"
+# Credentials: set BYBIT_API_KEY / BYBIT_API_SECRET env vars for mainnet.
+# Testnet keys are kept here only for development convenience.
+_TESTNET_KEY    = "YndDHQr6Mpx2i3fElS"
+_TESTNET_SECRET = "oGjioa9ZVih7rw1b4dBVMJJ2UkGQZ4LrF5cR"
+API_KEY    = os.environ.get("BYBIT_API_KEY",    _TESTNET_KEY)
+API_SECRET = os.environ.get("BYBIT_API_SECRET", _TESTNET_SECRET)
 
+# Base symbols — BTCUSDT added at startup when running --mainnet
+# (testnet BTC price feed is static so it's excluded from testnet)
 SYMBOLS = [
     "XRPUSDT",
     "ETHUSDT",
@@ -55,7 +61,6 @@ SYMBOLS = [
     "ADAUSDT",
     "TRXUSDT",
 ]
-# NOTE: BTCUSDT excluded from testnet — price feed is static
 
 INTERVAL_5M  = "5"
 INTERVAL_15M = "15"
@@ -92,7 +97,7 @@ EMA_15M_FAST = 20
 EMA_15M_SLOW = 50
 
 SLEEP_SEC       = 60   # idle cycle
-SLEEP_IN_TRADE  = 10   # fast cycle when holding a position
+SLEEP_IN_TRADE  = 3    # fast cycle when holding a position
 TRADE_LOG  = "dca_trades.csv"
 STATE_FILE = "dca_state.json"
 LEARN_FILE = "dca_learning.json"
@@ -100,14 +105,21 @@ LEARN_EVERY = 5
 
 # ================================================================
 
-session = HTTP(testnet=True, api_key=API_KEY, api_secret=API_SECRET)
+# session, IS_MAINNET, and log file handle are initialised in __main__ after args
+session    = None
+IS_MAINNET = False
+_log_fh    = None
 
 # ================================================================
 #  LOGGING
 # ================================================================
 def log(msg, level="INFO"):
     icons = {"INFO": "   ", "BUY": ">>", "SELL": "<<", "WARN": "!!", "ERR": "XX"}
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {icons.get(level,'  ')} {msg}")
+    line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {icons.get(level,'  ')} {msg}"
+    print(line)
+    if _log_fh:
+        _log_fh.write(line + "\n")
+        _log_fh.flush()
 
 
 # ================================================================
@@ -728,8 +740,9 @@ def run_bot():
     init_trade_log()
     learner = DcaLearningEngine()
 
+    mode_label = "MAINNET ⚠️  REAL MONEY" if IS_MAINNET else "TESTNET"
     log("=" * 70)
-    log("  DCA TRADING BOT — Bybit TESTNET")
+    log(f"  DCA TRADING BOT — Bybit {mode_label}")
     log(f"  Pairs      : {', '.join(SYMBOLS)}")
     log(f"  DCA Ladder : ${DCA_SIZES[0]:.0f} → ${DCA_SIZES[1]:.0f} → "
         f"${DCA_SIZES[2]:.0f}  (max ${sum(DCA_SIZES):.0f} per symbol)")
@@ -862,7 +875,8 @@ def run_bot():
                         # Estimate PnL from last known data
                         avg = calc_avg_entry(dca_levels[symbol])
                         tot = calc_total_usdt(dca_levels[symbol])
-                        pnl = (price - avg) * calc_total_coins(dca_levels[symbol]) \
+                        pnl = (price * (1 - TAKER_FEE) -
+                               avg * (1 + TAKER_FEE)) * calc_total_coins(dca_levels[symbol]) \
                               if avg > 0 else 0.0
                         total_pnl   += pnl
                         trade_count += 1
@@ -1214,10 +1228,32 @@ def run_bot():
 #  ENTRY POINT
 # ================================================================
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Bybit DCA Bot — Testnet Spot")
+    parser = argparse.ArgumentParser(description="Bybit DCA Bot — Spot")
+    parser.add_argument("--mainnet", action="store_true",
+                        help="Connect to Bybit MAINNET (requires BYBIT_API_KEY / "
+                             "BYBIT_API_SECRET env vars)")
     parser.add_argument("--reset", action="store_true",
                         help="Clear saved state and trade log before starting")
     args = parser.parse_args()
+
+    # ── Initialise globals that depend on --mainnet flag ──────────────
+    IS_MAINNET = args.mainnet
+
+    if IS_MAINNET:
+        key    = os.environ.get("BYBIT_API_KEY")
+        secret = os.environ.get("BYBIT_API_SECRET")
+        if not key or not secret:
+            print("ERROR: --mainnet requires BYBIT_API_KEY and BYBIT_API_SECRET "
+                  "environment variables to be set.")
+            raise SystemExit(1)
+        API_KEY    = key
+        API_SECRET = secret
+        SYMBOLS.append("BTCUSDT")
+
+    session = HTTP(testnet=not IS_MAINNET, api_key=API_KEY, api_secret=API_SECRET)
+
+    log_filename = "dca_mainnet.log" if IS_MAINNET else "dca_testnet.log"
+    _log_fh = open(log_filename, "a", encoding="utf-8")
 
     if args.reset:
         clear_state()
@@ -1225,4 +1261,7 @@ if __name__ == "__main__":
             os.remove(TRADE_LOG)
         log("Reset done: DCA state + trade log cleared.", "WARN")
 
-    run_bot()
+    try:
+        run_bot()
+    finally:
+        _log_fh.close()

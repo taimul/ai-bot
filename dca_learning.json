@@ -142,6 +142,28 @@
       "hour": 10,
       "entry_rsi": 50.77,
       "entry_bb": 0.256
+    },
+    {
+      "time": "2026-03-25T10:40:09.496221",
+      "symbol": "ADAUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "trail_stop",
+      "pnl_pct": -0.9559,
+      "win": false,
+      "hour": 10,
+      "entry_rsi": 44.59,
+      "entry_bb": 0.389
+    },
+    {
+      "time": "2026-03-25T10:45:26.387313",
+      "symbol": "SOLUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "trail_stop",
+      "pnl_pct": 0.268,
+      "win": true,
+      "hour": 10,
+      "entry_rsi": 50.47,
+      "entry_bb": 0.425
     }
   ],
   "symbol_stats": {
@@ -156,14 +178,14 @@
       "consec_losses": 1
     },
     "SOLUSDT": {
-      "wins": 4,
+      "wins": 5,
       "losses": 1,
       "consec_losses": 0
     },
     "ADAUSDT": {
       "wins": 4,
-      "losses": 0,
-      "consec_losses": 0
+      "losses": 1,
+      "consec_losses": 1
     },
     "TRXUSDT": {
       "wins": 0,
@@ -175,5 +197,5 @@
   "cooldowns": {},
   "dca_drop1": 0.015,
   "dca_drop2": 0.03,
-  "tp_pct": 0.02
+  "tp_pct": 0.022
 }
