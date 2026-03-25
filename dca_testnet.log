@@ -121,3 +121,35 @@
 [2026-03-25 11:01:53]       ADAUSDT    $      0.2680  RSI=54.7  BB=0.58  MACD=+0.0003  [waiting]  ▲
 [2026-03-25 11:01:54]       TRXUSDT    $      0.3095  RSI=50.3  BB=0.59  MACD=+0.0006  [waiting]  ▼
 [2026-03-25 11:01:54]     ──────────────────────────────────────────────────────────────────────
+[2026-03-25 11:02:56] !! DCA-LEARN  16 trades loaded | TP=2.2%  DCA1=-1.5%  DCA2=-3.0%
+[2026-03-25 11:02:56]     ======================================================================
+[2026-03-25 11:02:56]       DCA TRADING BOT — Bybit TESTNET
+[2026-03-25 11:02:56]       Pairs      : XRPUSDT, ETHUSDT, SOLUSDT, ADAUSDT, TRXUSDT
+[2026-03-25 11:02:56]       DCA Ladder : $60 → $80 → $100  (max $240 per symbol)
+[2026-03-25 11:02:56]       Triggers   : Entry→signal  DCA1→-1.5%  DCA2→-3.0%
+[2026-03-25 11:02:56]       Hard Stop  : -5.0% below initial entry
+[2026-03-25 11:02:56]       Take Profit: +2.0% above avg entry
+[2026-03-25 11:02:56]       Panic RSI  : < 22
+[2026-03-25 11:02:56]       Max Pos    : 2
+[2026-03-25 11:02:56]       State file : dca_state.json
+[2026-03-25 11:02:56]     ======================================================================
+[2026-03-25 11:02:56] !! SWEEP  Checking for non-USDT balances...
+[2026-03-25 11:02:57] !! SWEEP  USDC   ~$0.0449 — dust, skipping
+[2026-03-25 11:02:57] !! SWEEP  ETH    ~$0.0495 — dust, skipping
+[2026-03-25 11:02:57] !! SWEEP  SOL    ~$0.0069 — dust, skipping
+[2026-03-25 11:02:57] !! SWEEP  ADA    ~$0.0151 — dust, skipping
+[2026-03-25 11:02:57] !! SWEEP  XRP    ~$0.0631 — dust, skipping
+[2026-03-25 11:02:57] !! SWEEP  TRX    ~$0.0058 — dust, skipping
+[2026-03-25 11:02:57] !! SWEEP  Nothing to sweep — wallet clean.
+[2026-03-25 11:02:58]       Starting balance: $512.57 USDT
+[2026-03-25 11:02:58]     ======================================================================
+[2026-03-25 11:02:59]     Balance: $512.57  |  USDT: $512.39  |  Open: 0/2  |  Trades: 19  |  Win: 78%  |  PnL: +$16.76
+[2026-03-25 11:02:59] !! DCA-LEARN  Recent 16: WR=75% AvgPnL=+1.06% | TP=2.2%  DCA1=-1.5%  DCA2=-3.0%
+[2026-03-25 11:02:59]     ──────────────────────────────────────────────────────────────────────
+[2026-03-25 11:03:00]       XRPUSDT    $      1.4129  RSI=51.7  BB=0.45  MACD=+0.0008  [waiting]  ▼
+[2026-03-25 11:03:00] !!   XRPUSDT: SKIP — HIGH-VOL ATR=32.00% (max 2.0%)
+[2026-03-25 11:03:01]       ETHUSDT    $  2,169.1200  RSI=53.8  BB=0.95  MACD=+1.2796  [waiting]  ▲
+[2026-03-25 11:03:01]       SOLUSDT    $     90.7200  RSI=44.0  BB=0.32  MACD=-0.1330  [waiting]  ▲
+[2026-03-25 11:03:01] !!   SOLUSDT: SKIP — HIGH-VOL ATR=8.72% (max 2.0%)
+[2026-03-25 11:03:02]       ADAUSDT    $      0.2670  RSI=53.8  BB=0.53  MACD=+0.0002  [waiting]  ▲
+[2026-03-25 11:03:02] !!   ADAUSDT: SKIP — HIGH-VOL ATR=5.19% (max 2.0%)
