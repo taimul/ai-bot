@@ -895,9 +895,12 @@ def run_bot():
                             f"RSI={rsi_val:4.1f}  BB={bb_pct_val:.2f}  "
                             f"MACD={macd_sign}{macd_hist:.4f}  "
                             f"[IN DCA Lv{lv_count}]  {trend_icon}")
+                        exit_label = (f"Trail=${trail_sl[symbol]:.4f} 🎯"
+                                      if trail_sl[symbol] > 0
+                                      else f"TP=${avg_entry*(1+learner.tp_pct):.4f}")
                         log(f"           AvgEntry=${avg_entry:.4f}  "
                             f"SL=${sl_prices[symbol]:.4f}  "
-                            f"TP=${avg_entry*(1+learner.tp_pct):.4f}  "
+                            f"{exit_label}  "
                             f"Invested=${total_usdt_i:.2f}  "
                             f"P&L={pnl_sign}${abs(pnl_usd):.2f} "
                             f"({pnl_pct*100:+.2f}%) {pnl_icon}")
@@ -1036,14 +1039,10 @@ def run_bot():
                                 f"(target ${bb_mid_at_entry[symbol]:.4f})", "SELL")
                             close_position("bb_midline")
 
-                        # ── 5. INDICATOR SELL SIGNAL ──────────────
-                        elif is_indicator_sell(df, trend_ok):
-                            log(f"    SELL SIGNAL | "
-                                f"RSI={rsi_val:.1f}  BB={bb_pct_val:.2f}", "SELL")
-                            close_position("signal")
-
-                        # ── 6. DCA — ADD TO POSITION ──────────────
-                        # Only if position is still open (not closed above)
+                        # ── 5. DCA — ADD TO POSITION ──────────────
+                        # Checked BEFORE sell signal: if DCA conditions are
+                        # met we add to position rather than exiting. Sell
+                        # signal only fires when there is no DCA opportunity.
                         elif dca_levels[symbol]:
                             current_level = len(dca_levels[symbol]) - 1
                             next_level    = current_level + 1
@@ -1108,6 +1107,20 @@ def run_bot():
                                         f"(need {required_drop*100:.1f}%)  "
                                         f"RSI={rsi_val:.1f} "
                                         f"(need >{required_rsi})", "INFO")
+                                    # No DCA opportunity — now check sell signal
+                                    if is_indicator_sell(df, trend_ok):
+                                        log(f"    SELL SIGNAL (no DCA pending) | "
+                                            f"RSI={rsi_val:.1f}  BB={bb_pct_val:.2f}",
+                                            "SELL")
+                                        close_position("signal")
+
+                            else:
+                                # Already at max DCA level — allow sell signal
+                                if is_indicator_sell(df, trend_ok):
+                                    log(f"    SELL SIGNAL (max DCA reached) | "
+                                        f"RSI={rsi_val:.1f}  BB={bb_pct_val:.2f}",
+                                        "SELL")
+                                    close_position("signal")
 
                     # ═══════════════════════════════════════════════
                     #  LOOK FOR NEW ENTRY

@@ -1,0 +1,91 @@
+{
+  "trades": [
+    {
+      "time": "2026-03-25T09:44:10.056746",
+      "symbol": "SOLUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "signal",
+      "pnl_pct": -1.9873,
+      "win": false,
+      "hour": 9,
+      "entry_rsi": 51.1,
+      "entry_bb": 0.411
+    },
+    {
+      "time": "2026-03-25T09:49:23.757963",
+      "symbol": "ETHUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "bb_midline",
+      "pnl_pct": 0.2677,
+      "win": true,
+      "hour": 9,
+      "entry_rsi": 50.0,
+      "entry_bb": 0.444
+    },
+    {
+      "time": "2026-03-25T09:52:57.118545",
+      "symbol": "ADAUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "bb_midline",
+      "pnl_pct": 1.9011,
+      "win": true,
+      "hour": 9,
+      "entry_rsi": 52.63,
+      "entry_bb": 0.347
+    },
+    {
+      "time": "2026-03-25T09:56:26.851944",
+      "symbol": "ETHUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "bb_midline",
+      "pnl_pct": 0.0,
+      "win": false,
+      "hour": 9,
+      "entry_rsi": 50.0,
+      "entry_bb": 0.402
+    },
+    {
+      "time": "2026-03-25T10:03:28.765014",
+      "symbol": "SOLUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "trail_stop",
+      "pnl_pct": 2.776,
+      "win": true,
+      "hour": 10,
+      "entry_rsi": 48.4,
+      "entry_bb": 0.252
+    }
+  ],
+  "symbol_stats": {
+    "XRPUSDT": {
+      "wins": 0,
+      "losses": 0,
+      "consec_losses": 0
+    },
+    "ETHUSDT": {
+      "wins": 1,
+      "losses": 1,
+      "consec_losses": 1
+    },
+    "SOLUSDT": {
+      "wins": 1,
+      "losses": 1,
+      "consec_losses": 0
+    },
+    "ADAUSDT": {
+      "wins": 1,
+      "losses": 0,
+      "consec_losses": 0
+    },
+    "TRXUSDT": {
+      "wins": 0,
+      "losses": 0,
+      "consec_losses": 0
+    }
+  },
+  "avoid_hours": [],
+  "cooldowns": {},
+  "dca_drop1": 0.015,
+  "dca_drop2": 0.03,
+  "tp_pct": 0.02
+}

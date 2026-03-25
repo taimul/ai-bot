@@ -60,8 +60,9 @@ TAKE_PROFIT_PCT  = 0.03
 TRAIL_STOP_PCT   = 0.008
 MAX_POSITIONS    = 6
 DAILY_LOSS_LIMIT = 0.05
-MIN_TRADE_USDT   = 180
-MAX_ORDER_USDT   = 190     # Hard cap per order — set to $90 as requested
+MIN_TRADE_USDT   = 5       # Dust filter — ignore coin balances below $5
+MIN_ORDER_USDT   = 180     # Minimum order size per trade
+MAX_ORDER_USDT   = 200     # Maximum order size per trade
 
 # -- Indicators --
 RSI_PERIOD   = 14
@@ -348,9 +349,9 @@ def get_price(symbol):
     return safe_float(resp["result"]["list"][0]["lastPrice"])
 
 def calc_position_size(balance):
-    size = (balance * RISK_PCT) / STOP_LOSS_PCT
-    size = min(size, balance * 0.20)   # never more than 20% of balance
-    size = min(size, MAX_ORDER_USDT)   # hard cap — respects exchange limits
+    # Always trade between MIN_ORDER_USDT and MAX_ORDER_USDT
+    # as long as balance can cover it
+    size = max(MIN_ORDER_USDT, min(MAX_ORDER_USDT, balance * 0.40))
     return round(size, 2)
 
 def round_price(price):
@@ -1165,8 +1166,8 @@ def run_bot():
                                 signal_ok = False
                             if signal_ok:
                                 size = calc_position_size(usdt_bal)
-                                if size < MIN_TRADE_USDT:
-                                    log(f"    Skipping: size ${size:.2f} below minimum", "WARN")
+                                if usdt_bal < size:
+                                    log(f"    Skipping: need ${size:.2f} but only ${usdt_bal:.2f} USDT available", "WARN")
                                 else:
                                     sl = price * (1 - STOP_LOSS_PCT)
                                     tp = max(safe_float(last["bb_mid"]), price * (1 + TAKE_PROFIT_PCT))
