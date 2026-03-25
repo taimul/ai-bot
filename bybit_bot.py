@@ -60,8 +60,8 @@ TAKE_PROFIT_PCT  = 0.03
 TRAIL_STOP_PCT   = 0.008
 MAX_POSITIONS    = 6
 DAILY_LOSS_LIMIT = 0.05
-MIN_TRADE_USDT   = 5
-MAX_ORDER_USDT   = 90     # Hard cap per order — set to $90 as requested
+MIN_TRADE_USDT   = 180
+MAX_ORDER_USDT   = 190     # Hard cap per order — set to $90 as requested
 
 # -- Indicators --
 RSI_PERIOD   = 14
@@ -77,7 +77,8 @@ MACD_SIG     = 9
 EMA_15M_FAST = 20     # 15m trend EMAs
 EMA_15M_SLOW = 50
 
-SLEEP_SEC    = 60
+SLEEP_SEC        = 60   # idle cycle (no open positions)
+SLEEP_IN_TRADE   = 10  # fast cycle when holding a position
 TRADE_LOG    = "trades.csv"
 STATE_FILE   = "bot_state.json"
 LEARN_FILE   = "learning.json"
@@ -769,7 +770,7 @@ class LearningEngine:
 
             # Relax BB slightly if symbol is doing well; tighten if poor
             if sym_wr > 0.70 and len(sym_trades) >= 5:
-                new_bb = min(0.65, round(sp["BB_ENTRY"] + 0.03, 2))
+                new_bb = min(0.50, round(sp["BB_ENTRY"] + 0.03, 2))
                 if new_bb != sp["BB_ENTRY"]:
                     changes.append(f"{sym} BB→{new_bb:.2f} (WR={sym_wr:.0%} strong)")
                     sp["BB_ENTRY"] = new_bb
@@ -991,7 +992,7 @@ def run_bot():
                     # If position closed by exchange SL/TP while bot was offline,
                     # clean up our local state
                     if not in_pos and entry_prices[symbol] > 0:
-                        log(f"  {symbol}: Position closed by exchange (SL/TP hit while offline)", "WARN")
+                        log(f"  {symbol}: Coin balance gone — position closed externally or dust cleared", "WARN")
                         pnl = (price - entry_prices[symbol]) * (entry_usdt[symbol] / entry_prices[symbol])
                         total_pnl += pnl
                         trade_count += 1
@@ -1168,7 +1169,7 @@ def run_bot():
                                     log(f"    Skipping: size ${size:.2f} below minimum", "WARN")
                                 else:
                                     sl = price * (1 - STOP_LOSS_PCT)
-                                    tp = max(safe_float(last["bb_mid"]), price * (1 + TAKE_PROFIT_PCT * 0.5))
+                                    tp = max(safe_float(last["bb_mid"]), price * (1 + TAKE_PROFIT_PCT))
                                     log(f"    BUY SIGNAL [{' | '.join(reasons)}] | "
                                         f"Size=${size:.2f} | SL=${sl:.4f} | TP=${tp:.4f}", "BUY")
                                     if place_buy(symbol, size, sl, tp):
@@ -1209,7 +1210,8 @@ def run_bot():
             time.sleep(wait)
             continue
 
-        time.sleep(SLEEP_SEC)
+        any_open = any(entry_prices[s] > 0 for s in SYMBOLS)
+        time.sleep(SLEEP_IN_TRADE if any_open else SLEEP_SEC)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Bybit testnet scalp bot")
