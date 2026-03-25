@@ -66,7 +66,7 @@ MAX_ORDER_USDT   = 200     # Maximum order size per trade
 
 # -- Volatility Filter --
 ATR_PERIOD    = 14   # candles for ATR calculation
-ATR_MA_PERIOD = 50   # candles for ATR baseline (what's "normal" for this symbol)
+ATR_MA_PERIOD = 100  # candles for ATR baseline (what's "normal" for this symbol)
 ATR_RATIO_MAX = 1.5  # block entry if current ATR > 1.5x its own recent average
 
 # -- Indicators --
@@ -990,7 +990,7 @@ def run_bot():
                         log(f"  {symbol:<10} SKIPPED by learner (too many losses)", "WARN")
                         continue
 
-                    df = add_15m_indicators(get_candles(symbol, INTERVAL_5M))
+                    df = add_15m_indicators(get_candles(symbol, INTERVAL_5M, limit=200))
 
                     # Need at least 2 rows for prev/last comparisons + enough for indicators
                     min_rows = BB_PERIOD + RSI_PERIOD + 5

@@ -175,6 +175,17 @@
       "hour": 11,
       "entry_rsi": 52.24,
       "entry_bb": 0.426
+    },
+    {
+      "time": "2026-03-25T11:39:22.341174",
+      "symbol": "SOLUSDT",
+      "dca_levels_used": 1,
+      "exit_reason": "trail_stop",
+      "pnl_pct": 1.5265,
+      "win": true,
+      "hour": 11,
+      "entry_rsi": 43.19,
+      "entry_bb": 0.396
     }
   ],
   "symbol_stats": {
@@ -189,7 +200,7 @@
       "consec_losses": 1
     },
     "SOLUSDT": {
-      "wins": 5,
+      "wins": 6,
       "losses": 1,
       "consec_losses": 0
     },

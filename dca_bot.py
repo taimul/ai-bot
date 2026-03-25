@@ -84,7 +84,7 @@ TAKER_FEE        = 0.001   # Bybit spot taker fee (0.1% per side, 0.2% round-tri
 
 # -- Volatility Filter --
 ATR_PERIOD    = 14   # candles for ATR calculation
-ATR_MA_PERIOD = 50   # candles for ATR baseline (what's "normal" for this symbol)
+ATR_MA_PERIOD = 100  # candles for ATR baseline (what's "normal" for this symbol)
 ATR_RATIO_MAX = 1.5  # block entry if current ATR > 1.5x its own recent average
 
 # -- Indicators (same as scalp bot for consistency) --
@@ -856,7 +856,7 @@ def run_bot():
                         log(f"  {symbol:<10} SKIPPED — DCA cooldown active", "WARN")
                         continue
 
-                    df = add_indicators(get_candles(symbol, INTERVAL_5M))
+                    df = add_indicators(get_candles(symbol, INTERVAL_5M, limit=200))
 
                     min_rows = BB_PERIOD + RSI_PERIOD + 5
                     if len(df) < min_rows:
